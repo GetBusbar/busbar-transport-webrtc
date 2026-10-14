@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-transport-webrtc"
+version = "1.6.0"
+publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
+edition = "2021"
+rust-version = "1.97"
+description = "The webrtc framer: ICE, SRTP and SCTP over the host's datagram port and secure layer, sans-IO. It holds no DTLS state; the host's secure layer hands it the exported keying material."
+license = "Apache-2.0"
+
+[lib]
+# rlib: the LINKED door (`linked::door`), which a busbar build names as a compiled-in row. The
+# dropped-in door is the sibling `busbar-transport-webrtc-plugin` cdylib, which exports this same door
+# as its one symbol; this crate exports none.
+crate-type = ["rlib"]
+
+# DEPENDENCY POLICY (THE DESIGN l.749-757, ARCHITECT D2 approval). A transport plugin's closure is
+# busbar-contract plus what its framing needs:
+# * str0m: ICE, SRTP, SCTP and the session description, sans-IO, default features off.
+# * ring: every cryptographic primitive the framer runs (AEAD-AES-GCM, HMAC-SHA1, SHA-256, random).
+# * aes: the SRTP key derivation's AES block, the one exception to ring-only, confined by
+#   tests/dependency_closure.rs.
+# * zeroize: the keying material and the keys derived from it are cleared when dropped.
+[dependencies]
+# The ONE busbar crate a plugin names. Pinned by git rev to the busbar commit in `.busbar-ref`; a
+# busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy
+# of the contract links.
+busbar-contract = { workspace = true }
+str0m = { workspace = true }
+ring = { workspace = true }
+aes = { workspace = true, features = ["zeroize"] }
+zeroize = { workspace = true }
