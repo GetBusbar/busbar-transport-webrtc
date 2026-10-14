@@ -1,0 +1,15 @@
+{
+  "settings": {},
+  "transport": {
+    "datagram": {
+      "locate": "failed",
+      "encode": "failed",
+      "opening": [["channel", "events"]],
+      "offer": {
+        "text": true,
+        "contains": ["v=0", "a=fingerprint:sha-256 ", "198.51.100.1 40000 typ host", "m=application"]
+      },
+      "junk": "not a session description"
+    }
+  }
+}
