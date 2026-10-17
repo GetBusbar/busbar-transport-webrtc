@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST SHIM: what the media stack sees in place of its own DTLS (THE DESIGN l.707-712,
-//! l.756-765: DTLS runs in the host's secure layer; the framer holds no DTLS state).
+//! THE HOST SHIM: what the media stack sees in place of its own DTLS (THE DESIGN §5, "Datagram
+//! media": DTLS runs in the host's secure layer; the framer holds no DTLS state).
 //!
 //! It runs no handshake, parses no record and holds no DTLS key. It only RELAYS what the host's
 //! secure layer reported through the datagram lane:
@@ -15,12 +15,23 @@
 //! secured lane, which the host seals. Before the host's "connected", nothing is taken for sealing
 //! (the media stack retries: `DtlsImplError::HandshakePending`).
 //!
+//! THE RELAY RUNS IN-BAND, through the media stack itself, so nothing outside one association's
+//! `Rtc` holds any of it (THE DESIGN §2: "A plugin holds no process-global state"). The stack
+//! builds its handshake slot itself ([`Host::new_dtls`], a fresh [`Shim`] per association, owned by
+//! that association's stack) and hands that slot every datagram in the RFC 7983 range 20..=63. The
+//! framer speaks to its shim with such datagrams of its own ([`keying_frame`], [`CONNECTED_FRAME`],
+//! [`opened_frame`]), and drops every far-end datagram in that range before the stack sees it
+//! ([`is_relay_range`]); the shim hands what is to be sealed back as one such datagram, which the
+//! framer takes off the stack's output ([`sealed`]) and routes on the secured lane.
+//!
 //! This file is the ONE place the framer names the media stack's DTLS interface (its provider and
 //! instance traits, the certificate it is configured with, the profile type of the keying
-//! material); no DTLS engine is named anywhere (`tests/no_dtls.rs` holds both).
+//! material). The DTLS engine the media stack depends on is linked transitively; its keying type,
+//! re-exported by the stack, is the one thing of it this crate names, here (`tests/no_dtls.rs`
+//! holds that no engine is named as code or as a dependency).
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use str0m::crypto::dtls::{
@@ -29,17 +40,14 @@ use str0m::crypto::dtls::{
 };
 use str0m::crypto::{CryptoError, CryptoProvider};
 use str0m::RtcConfig;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::framing::{PROFILE_AEAD_AES_128_GCM, PROFILE_AEAD_AES_256_GCM};
 
-/// The DTLS factory of [`crate::crypto::provider`]: it hands out the shim armed for the
-/// association being built ([`arm`]), never a DTLS engine.
+/// The DTLS factory of [`crate::crypto::provider`]: a fresh [`Shim`] for each association the media
+/// stack builds, owned by that association's stack; never a DTLS engine. It holds nothing.
 #[derive(Debug)]
 pub struct Host;
-
-/// The one factory.
-pub static HOST: Host = Host;
 
 impl DtlsProvider for Host {
     fn generate_certificate(&self) -> Option<DtlsCert> {
@@ -53,23 +61,19 @@ impl DtlsProvider for Host {
         _version: DtlsVersion,
         _mtu: Option<usize>,
     ) -> Result<Box<dyn DtlsInstance>, CryptoError> {
-        take_pending()
-            .map(|s| Box::new(s) as Box<dyn DtlsInstance>)
-            .ok_or_else(|| {
-                CryptoError::Other("no host shim is pending for this association".into())
-            })
+        Ok(Box::new(Shim::default()))
     }
 }
 
 /// The media stack's crypto provider: every primitive on `ring` ([`crate::crypto::Ring`]), the
-/// DTLS factory the host shim.
+/// DTLS factory the host shim's.
 #[must_use]
 pub fn provider(ring: &'static crate::crypto::Ring) -> CryptoProvider {
     CryptoProvider {
         srtp_provider: ring,
         sha1_hmac_provider: ring,
         sha256_provider: ring,
-        dtls_provider: &HOST,
+        dtls_provider: &Host,
     }
 }
 
@@ -87,24 +91,97 @@ pub fn present(config: RtcConfig, certificate: &[u8]) -> RtcConfig {
         .set_fingerprint_verification(false)
 }
 
-std::thread_local! {
-    static PENDING: std::cell::RefCell<Option<Shim>> = const { std::cell::RefCell::new(None) };
+// ── the in-band relay ───────────────────────────────────────────────────────────────────────────
+
+/// Framer to shim: `[KEYING, profile code, material...]`.
+const KEYING: u8 = 20;
+/// Framer to shim: the host verified the far end and keyed.
+const CONNECTED: u8 = 21;
+/// Framer to shim: `[OPENED, plaintext...]`, plaintext the host's secure layer opened.
+const OPENED: u8 = 22;
+/// Shim to framer: `[SEAL, plaintext...]`, application data for the host to seal.
+const SEAL: u8 = 23;
+
+/// The keying material's length under each admitted profile (RFC 7714 §12: two master keys and two
+/// 12-byte master salts).
+const KEYING_LEN_128: usize = 2 * 16 + 2 * 12;
+/// `SRTP_AEAD_AES_256_GCM`'s.
+const KEYING_LEN_256: usize = 2 * 32 + 2 * 12;
+
+/// The refusal a keying-material item whose length is not its profile's meets.
+pub const KEYING_LENGTH_REFUSED: &str =
+    "the keying material's length is not its protection profile's";
+
+/// The datagram that tells the shim the host verified the far end and keyed.
+pub const CONNECTED_FRAME: [u8; 1] = [CONNECTED];
+
+/// Whether `datagram` lies in the RFC 7983 range the media stack hands its handshake slot. A far
+/// end's datagram in it never reaches the stack: the host's secure layer keeps every such record,
+/// and that range is the framer's own line to its shim.
+#[must_use]
+pub fn is_relay_range(datagram: &[u8]) -> bool {
+    matches!(datagram.first(), Some(20..=63))
 }
 
-/// Arm `shim` as the one the next association built on this thread receives.
-pub fn arm(shim: Shim) {
-    PENDING.with(|p| *p.borrow_mut() = Some(shim));
+/// The datagram that hands the shim `material`, exported under the protection profile whose
+/// registry code is `profile`. AEAD-AES-GCM only, at its profile's length; it is zeroed on drop.
+///
+/// # Errors
+///
+/// [`crate::crypto::AES_CM_REFUSED`] for a profile other than the two AEAD-AES-GCM ones,
+/// [`KEYING_LENGTH_REFUSED`] for material that is not that profile's length.
+pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    let (code, len) = match profile {
+        PROFILE_AEAD_AES_128_GCM => (PROFILE_AEAD_AES_128_GCM, KEYING_LEN_128),
+        PROFILE_AEAD_AES_256_GCM => (PROFILE_AEAD_AES_256_GCM, KEYING_LEN_256),
+        _ => return Err(crate::crypto::AES_CM_REFUSED),
+    };
+    if material.len() != len {
+        return Err(KEYING_LENGTH_REFUSED);
+    }
+    let mut frame = Zeroizing::new(Vec::with_capacity(2 + len));
+    frame.push(KEYING);
+    frame.push(u8::try_from(code).unwrap_or_default());
+    frame.extend_from_slice(material);
+    Ok(frame)
 }
 
-/// The armed shim, taken.
-pub fn take_pending() -> Option<Shim> {
-    PENDING.with(|p| p.borrow_mut().take())
+/// Whether `frame` is a keying datagram not yet handed to the shim.
+#[must_use]
+pub fn is_keying(frame: &[u8]) -> bool {
+    frame.first() == Some(&KEYING)
 }
+
+/// Write into `frame` (a buffer the framer reuses, zeroed between uses) the datagram that hands
+/// the shim `plaintext`.
+pub fn opened_frame(frame: &mut Zeroizing<Vec<u8>>, plaintext: &[u8]) {
+    frame.zeroize();
+    frame.push(OPENED);
+    frame.extend_from_slice(plaintext);
+}
+
+/// The plaintext to seal, when `datagram` (one the media stack transmits) is the shim's; the
+/// datagram back otherwise.
+///
+/// # Errors
+///
+/// `datagram`, unchanged, when it is not the shim's.
+pub fn sealed(mut datagram: Vec<u8>) -> Result<Vec<u8>, Vec<u8>> {
+    if datagram.first() == Some(&SEAL) {
+        datagram.remove(0);
+        Ok(datagram)
+    } else {
+        Err(datagram)
+    }
+}
+
+/// The most spent buffers a shim keeps for reuse, each way.
+const SPARE: usize = 8;
 
 /// How far ahead the shim's timer lies: it has nothing to time.
 const IDLE: Duration = Duration::from_secs(3600);
 
-/// The relay's state, shared by the media stack's handle and the framing's.
+/// The relay's state.
 #[derive(Debug, Default)]
 pub struct Relay {
     active: Option<bool>,
@@ -112,14 +189,16 @@ pub struct Relay {
     connected: bool,
     connected_owed: bool,
     opened: VecDeque<Zeroizing<Vec<u8>>>,
+    spare_opened: Vec<Zeroizing<Vec<u8>>>,
     to_seal: VecDeque<Vec<u8>>,
+    spare_seal: Vec<Vec<u8>>,
     closed: bool,
     now: Option<Instant>,
 }
 
-/// One association's shim.
-#[derive(Debug, Clone, Default)]
-pub struct Shim(Arc<Mutex<Relay>>);
+/// One association's shim: the media stack's handshake slot, owned by that association's stack.
+#[derive(Debug, Default)]
+pub struct Shim(Mutex<Relay>);
 
 impl Shim {
     fn lock(&self) -> MutexGuard<'_, Relay> {
@@ -127,19 +206,23 @@ impl Shim {
     }
 
     /// The host's secure layer exported `material` under the protection profile whose registry code
-    /// is `profile`. AEAD-AES-GCM only: any other profile (`AES_CM` and the rest) is refused and
+    /// is `profile`. AEAD-AES-GCM only, at its profile's length: anything else is refused and
     /// nothing of the material is held.
     ///
     /// # Errors
     ///
-    /// [`crate::crypto::AES_CM_REFUSED`], for a profile other than the two AEAD-AES-GCM ones.
+    /// [`crate::crypto::AES_CM_REFUSED`], for a profile other than the two AEAD-AES-GCM ones;
+    /// [`KEYING_LENGTH_REFUSED`], for material that is not its profile's length.
     pub fn keyed(&self, material: &[u8], profile: u32) -> Result<(), &'static str> {
         let profile = match profile {
-            PROFILE_AEAD_AES_128_GCM => SrtpProfile::AEAD_AES_128_GCM,
-            PROFILE_AEAD_AES_256_GCM => SrtpProfile::AEAD_AES_256_GCM,
+            PROFILE_AEAD_AES_128_GCM => (SrtpProfile::AEAD_AES_128_GCM, KEYING_LEN_128),
+            PROFILE_AEAD_AES_256_GCM => (SrtpProfile::AEAD_AES_256_GCM, KEYING_LEN_256),
             _ => return Err(crate::crypto::AES_CM_REFUSED),
         };
-        self.lock().keying = Some((Zeroizing::new(material.to_vec()), profile));
+        if material.len() != profile.1 {
+            return Err(KEYING_LENGTH_REFUSED);
+        }
+        self.lock().keying = Some((Zeroizing::new(material.to_vec()), profile.0));
         Ok(())
     }
 
@@ -158,16 +241,15 @@ impl Shim {
         self.lock().connected
     }
 
-    /// Plaintext the host's secure layer opened.
+    /// Plaintext the host's secure layer opened (dropped before "connected").
     pub fn opened(&self, plaintext: &[u8]) {
-        self.lock()
-            .opened
-            .push_back(Zeroizing::new(plaintext.to_vec()));
-    }
-
-    /// The next plaintext the media stack wants sealed.
-    pub fn take_to_seal(&self) -> Option<Vec<u8>> {
-        self.lock().to_seal.pop_front()
+        let mut r = self.lock();
+        if !r.connected {
+            return;
+        }
+        let mut b = r.spare_opened.pop().unwrap_or_default();
+        b.extend_from_slice(plaintext);
+        r.opened.push_back(b);
     }
 
     /// The role the media stack settled: `Some(true)` = this end opens the handshake.
@@ -188,8 +270,19 @@ impl DtlsInstance for Shim {
         self.lock().active = Some(active);
     }
 
-    fn handle_packet(&mut self, _packet: &[u8]) -> Result<(), DtlsImplError> {
-        // The host's secure layer keeps every record: none reaches the framer.
+    fn handle_packet(&mut self, packet: &[u8]) -> Result<(), DtlsImplError> {
+        // The host's secure layer keeps every record: none reaches the framer, and the framer drops
+        // a far end's datagram in this range. What arrives here is the framer's own relay.
+        match packet.split_first() {
+            Some((&KEYING, rest)) => {
+                if let Some((&code, material)) = rest.split_first() {
+                    let _ = self.keyed(material, u32::from(code));
+                }
+            }
+            Some((&CONNECTED, _)) => self.connected(),
+            Some((&OPENED, plaintext)) => self.opened(plaintext),
+            _ => {}
+        }
         Ok(())
     }
 
@@ -202,13 +295,38 @@ impl DtlsInstance for Shim {
             r.connected_owed = false;
             return DtlsOutput::Connected;
         }
-        while let Some(data) = r.opened.pop_front() {
-            if let Some(dst) = buf.get_mut(..data.len()) {
-                dst.copy_from_slice(&data);
-                drop(r);
-                return DtlsOutput::ApplicationData(&buf[..data.len()]);
+        while let Some(mut data) = r.opened.pop_front() {
+            let n = data.len();
+            let fits = buf.len() >= n;
+            if fits {
+                buf[..n].copy_from_slice(&data);
             }
             // A plaintext larger than the stack's record buffer is no message it can read.
+            data.zeroize();
+            if r.spare_opened.len() < SPARE {
+                r.spare_opened.push(data);
+            }
+            if fits {
+                drop(r);
+                return DtlsOutput::ApplicationData(&buf[..n]);
+            }
+        }
+        while let Some(mut data) = r.to_seal.pop_front() {
+            let n = data.len() + 1;
+            let fits = buf.len() >= n;
+            if fits {
+                buf[0] = SEAL;
+                buf[1..n].copy_from_slice(&data);
+            }
+            // A packet larger than the stack's record buffer is no datagram the port can carry.
+            data.clear();
+            if r.spare_seal.len() < SPARE {
+                r.spare_seal.push(data);
+            }
+            if fits {
+                drop(r);
+                return DtlsOutput::Packet(&buf[..n]);
+            }
         }
         let at = r.now.unwrap_or_else(Instant::now) + IDLE;
         DtlsOutput::Timeout(at)
@@ -224,7 +342,9 @@ impl DtlsInstance for Shim {
         if !r.connected || r.closed {
             return Err(DtlsImplError::HandshakePending);
         }
-        r.to_seal.push_back(data.to_vec());
+        let mut b = r.spare_seal.pop().unwrap_or_default();
+        b.extend_from_slice(data);
+        r.to_seal.push_back(b);
         Ok(())
     }
 
