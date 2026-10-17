@@ -176,7 +176,7 @@ impl Gcm {
         let total: usize = aads.iter().map(|a| a.len()).sum();
         let spilled: Vec<u8>;
         let aad: &[u8] = match aads {
-            [one] => *one,
+            [one] => one,
             _ if total <= AAD_ON_STACK => {
                 let mut at = 0;
                 for a in aads {
