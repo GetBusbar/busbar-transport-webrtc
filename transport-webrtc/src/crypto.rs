@@ -18,7 +18,7 @@
 use std::fmt;
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_128_GCM, AES_256_GCM};
+use ring::aead::{Aad, LessSafeKey, Nonce, Tag, UnboundKey, AES_128_GCM, AES_256_GCM};
 use str0m::crypto::{
     AeadAes128GcmCipher, AeadAes256GcmCipher, Aes128CmSha1_80Cipher, CryptoError, CryptoProvider,
     Sha1HmacProvider, Sha256Provider, SrtpProvider, SupportedAeadAes128Gcm, SupportedAeadAes256Gcm,
@@ -26,18 +26,21 @@ use str0m::crypto::{
 };
 use zeroize::{Zeroize as _, Zeroizing};
 
-/// The provider: one static instance of each component.
+/// The provider. It holds nothing: every reference to it is a promoted constant, never a `static`
+/// (THE DESIGN §2: "A plugin holds no process-global state").
 #[derive(Debug)]
 pub struct Ring;
-
-static RING: Ring = Ring;
 
 /// The crypto provider every framing's media stack runs on (its handshake slot is the host shim's,
 /// [`crate::shim::provider`]).
 #[must_use]
 pub fn provider() -> CryptoProvider {
-    crate::shim::provider(&RING)
+    crate::shim::provider(&Ring)
 }
+
+/// The most AAD bytes an open gathers on the stack (an SRTP header with its extensions, an SRTCP
+/// header and index); more spill to the heap.
+const AAD_ON_STACK: usize = 1024;
 
 fn refused(why: &str) -> CryptoError {
     CryptoError::Other(why.into())
@@ -50,15 +53,15 @@ pub const AES_CM_REFUSED: &str = "SRTP AES_CM is refused: AEAD-AES-GCM only";
 
 impl SrtpProvider for Ring {
     fn aes_128_cm_sha1_80(&self) -> &'static dyn SupportedAes128CmSha1_80 {
-        &RING
+        &Ring
     }
 
     fn aead_aes_128_gcm(&self) -> &'static dyn SupportedAeadAes128Gcm {
-        &RING
+        &Ring
     }
 
     fn aead_aes_256_gcm(&self) -> &'static dyn SupportedAeadAes256Gcm {
-        &RING
+        &Ring
     }
 
     fn srtp_aes_128_ecb_round(&self, key: &[u8], input: &[u8], output: &mut [u8]) {
@@ -150,7 +153,9 @@ impl Gcm {
         Ok(())
     }
 
-    /// `input = ciphertext || tag`; the plaintext into `output`, its length answered.
+    /// `input = ciphertext || tag`; the plaintext into `output`, its length answered. Opened in
+    /// place in `output` with the AAD gathered on the stack: no allocation per packet (THE DESIGN
+    /// §11.2). A packet that fails authentication leaves `output` zeroed.
     fn open(
         &self,
         iv: &[u8; 12],
@@ -159,20 +164,48 @@ impl Gcm {
         output: &mut [u8],
     ) -> Result<usize, CryptoError> {
         let tag_len = self.key.algorithm().tag_len();
-        if input.len() < tag_len {
+        let Some(n) = input.len().checked_sub(tag_len) else {
             return Err(refused("SRTP open: shorter than its tag"));
-        }
-        let aad: Vec<u8> = aads.concat();
-        let mut buf = Zeroizing::new(input.to_vec());
-        let plain = self
-            .key
-            .open_in_place(Nonce::assume_unique_for_key(*iv), Aad::from(&aad), &mut buf)
-            .map_err(|_| refused("SRTP authentication failed"))?;
-        let n = plain.len();
+        };
         if output.len() < n {
             return Err(refused("SRTP open: output too short"));
         }
-        output[..n].copy_from_slice(plain);
+        let (ciphertext, tag) = input.split_at(n);
+        let tag = Tag::try_from(tag).map_err(|_| refused("SRTP open: a malformed tag"))?;
+        let mut gathered = [0_u8; AAD_ON_STACK];
+        let total: usize = aads.iter().map(|a| a.len()).sum();
+        let spilled: Vec<u8>;
+        let aad: &[u8] = match aads {
+            [one] => *one,
+            _ if total <= AAD_ON_STACK => {
+                let mut at = 0;
+                for a in aads {
+                    gathered[at..at + a.len()].copy_from_slice(a);
+                    at += a.len();
+                }
+                &gathered[..total]
+            }
+            _ => {
+                spilled = aads.concat();
+                &spilled
+            }
+        };
+        let out = &mut output[..n];
+        out.copy_from_slice(ciphertext);
+        if self
+            .key
+            .open_in_place_separate_tag(
+                Nonce::assume_unique_for_key(*iv),
+                Aad::from(aad),
+                tag,
+                out,
+                0..,
+            )
+            .is_err()
+        {
+            out.zeroize();
+            return Err(refused("SRTP authentication failed"));
+        }
         Ok(n)
     }
 }

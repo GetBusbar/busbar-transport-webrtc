@@ -10,6 +10,8 @@ fn piece(bytes: &[u8], fields: bool, text: bool, end: bool) -> Piece {
         fields,
         text,
         end,
+        failed: false,
+        writable: false,
     }
 }
 

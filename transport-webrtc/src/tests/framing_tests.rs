@@ -441,10 +441,10 @@ fn a_dialling_framing_with_nothing_to_offer_is_refused() {
 }
 
 /// A CHANNEL DELIVERS IN ORDER (an ordered data channel; the contract's stream is a sequence of
-/// frames). A message the media stack has no room for is held, and a later, smaller one never
-/// overtakes it: it queues behind.
+/// frames). A message the media stack has no room for is held, and a smaller one written after it
+/// never overtakes it: it queues behind.
 #[test]
-fn a_held_message_is_never_overtaken_by_a_later_one() {
+fn a_held_message_is_never_overtaken() {
     let (mut dial, mut accept, mut now) = connected();
     let (stream, _) = accept
         .pieces
