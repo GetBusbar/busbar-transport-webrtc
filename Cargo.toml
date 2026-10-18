@@ -119,3 +119,12 @@ redis = { version = "1", default-features = false, features = ["script"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 ulid = "1"
 
+
+# THE MEDIA STACK, ZEROISING (busbar Q128 transport-webrtc H2; THE DESIGN §5 "Datagram media": "keys
+# are zeroised"): GetBusbar forks of str0m 0.24.1 and dimpl 0.7.4 at fixed revs, each the upstream
+# release plus small zeroize-on-drop commits (dimpl: KeyingMaterial; str0m: no intermediate copy of
+# the keying material, SrtpKey and the derived SRTP keys, the ICE password). Dropped once upstream
+# carries them; busbar's .github/fleet/deps.toml states the row and its reason.
+[patch.crates-io]
+str0m = { git = "https://github.com/GetBusbar/str0m", rev = "a142c64e1fafc5cca029adda1507a51064f81902" }
+dimpl = { git = "https://github.com/GetBusbar/dimpl", rev = "88f01226145c6a904986156e92610b1eb642f143" }

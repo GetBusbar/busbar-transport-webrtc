@@ -268,8 +268,7 @@ dependencies = [
 [[package]]
 name = "dimpl"
 version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07d467d37bfdcc290bb8dcbedc8ca356eb730e46459b1687f98c3bae28aa6814"
+source = "git+https://github.com/GetBusbar/dimpl?rev=88f01226145c6a904986156e92610b1eb642f143#88f01226145c6a904986156e92610b1eb642f143"
 dependencies = [
  "arrayvec",
  "log",
@@ -278,6 +277,7 @@ dependencies = [
  "rand",
  "subtle",
  "time",
+ "zeroize",
 ]
 
 [[package]]
@@ -515,14 +515,14 @@ dependencies = [
 [[package]]
 name = "is"
 version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6edbbdc611843e8c65878ee735f68c495cede11ae5a9582b17fe0369c456ef5"
+source = "git+https://github.com/GetBusbar/str0m?rev=a142c64e1fafc5cca029adda1507a51064f81902#a142c64e1fafc5cca029adda1507a51064f81902"
 dependencies = [
  "crc",
  "serde",
  "str0m-proto",
  "subtle",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -852,8 +852,7 @@ dependencies = [
 [[package]]
 name = "str0m"
 version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e80c4a4ef148e4a9fd15b9525c7f376d97e86729f19880b591ad220f1288c0f"
+source = "git+https://github.com/GetBusbar/str0m?rev=a142c64e1fafc5cca029adda1507a51064f81902#a142c64e1fafc5cca029adda1507a51064f81902"
 dependencies = [
  "arrayvec",
  "base64ct",
@@ -867,13 +866,13 @@ dependencies = [
  "subtle",
  "time",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
 name = "str0m-proto"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8f3d99f2cf6c76a502e45feb896ea71e54787ede8744bcdb215acfbfcb905dd"
+source = "git+https://github.com/GetBusbar/str0m?rev=a142c64e1fafc5cca029adda1507a51064f81902#a142c64e1fafc5cca029adda1507a51064f81902"
 dependencies = [
  "base64ct",
  "dimpl",
