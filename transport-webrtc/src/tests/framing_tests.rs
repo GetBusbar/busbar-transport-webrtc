@@ -439,3 +439,75 @@ fn a_dialling_framing_with_nothing_to_offer_is_refused() {
         Some("a dialling framing offers nothing".to_string())
     );
 }
+
+/// A CHANNEL DELIVERS IN ORDER (an ordered data channel; the contract's stream is a sequence of
+/// frames). A message the media stack has no room for is held, and a smaller one written after it
+/// never overtakes it: it queues behind.
+#[test]
+fn a_held_message_is_never_overtaken() {
+    let (mut dial, mut accept, mut now) = connected();
+    let (stream, _) = accept
+        .pieces
+        .iter()
+        .find(|p| p.fields && p.bytes.starts_with(b"label: "))
+        .map(|p| (p.stream, p.bytes.clone()))
+        .expect("the accepting end opened the channel");
+    // The first two fill most of the stack's send buffer, the third does not fit beside them and
+    // is held, the fourth would fit.
+    let sent = [
+        vec![1_u8; 60_000],
+        vec![2_u8; 60_000],
+        vec![3_u8; 20_000],
+        b"fourth".to_vec(),
+    ];
+    for m in &sent {
+        dial.f.emit(1, m, false, now).expect("taken");
+    }
+    run(&mut dial, &mut accept, &mut now, 3000);
+    let got: Vec<usize> = heard(&accept, stream).iter().map(Vec::len).collect();
+    let want: Vec<usize> = sent.iter().map(Vec::len).collect();
+    assert_eq!(got, want, "the channel delivered out of order");
+}
+
+/// A FAILED STREAM FAILS ALONE (the transport contract: "A failed stream fails alone: its siblings
+/// on the connection carry on"). A host that keeps emitting on a channel past what the framer
+/// holds for it costs that channel, never the association.
+#[test]
+fn one_channels_overflow_never_fails_the_association() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    // The channel is not open yet: every message is held.
+    for n in 0..(MAX_HELD + 50) {
+        if let Err(e) = dial.f.emit(1, &[n as u8; 8], false, now) {
+            panic!("one channel's overflow failed the whole association: {e}");
+        }
+    }
+    assert_eq!(dial.f.failure(), None, "the association carries on");
+}
+
+/// THE RENDEZVOUS TERMS ARE BOUNDED: a far end's description that advertises any number of
+/// candidates yields terms of a bounded size, so they always fit a host's frame buffer whole.
+#[test]
+fn a_far_ends_candidates_are_read_up_to_a_bound() {
+    let mut d = String::from(
+        "v=0\r\na=ice-ufrag:abcd\r\na=ice-pwd:0123456789abcdef0123456789\r\n\
+         a=fingerprint:sha-256 ",
+    );
+    d.push_str(&["AB"; 32].join(":"));
+    d.push_str("\r\n");
+    for n in 0..5000_u32 {
+        d.push_str(&format!(
+            "a=candidate:{n} 1 udp 2130706431 10.{}.{}.{} 9 typ host\r\n",
+            (n >> 16) & 0xff,
+            (n >> 8) & 0xff,
+            n & 0xff
+        ));
+    }
+    let (_, _, _, candidates) = read_remote(&d).expect("terms");
+    assert!(!candidates.is_empty(), "candidates are read");
+    assert!(
+        candidates.len() <= 64,
+        "{} candidates read from one description: the terms grow without bound",
+        candidates.len()
+    );
+}

@@ -22,7 +22,7 @@ fn is_aes_cm_refusal(e: &CryptoError) -> bool {
 #[test]
 fn the_aes_cm_cipher_refuses_every_packet_both_ways() {
     for encrypt in [true, false] {
-        let mut c = RING.aes_128_cm_sha1_80().create_cipher([9_u8; 16], encrypt);
+        let mut c = Ring.aes_128_cm_sha1_80().create_cipher([9_u8; 16], encrypt);
         let mut out = [0_u8; 64];
         let sealed = c.encrypt(&[1_u8; 16], b"a protected payload", &mut out);
         assert!(sealed.as_ref().is_err_and(is_aes_cm_refusal), "{sealed:?}");
@@ -37,9 +37,9 @@ fn red_arm_the_gcm_ciphers_of_the_same_provider_seal_and_open() {
     let (iv, aad, plain) = ([3_u8; 12], b"rtp header", b"an opus frame");
     let mut sealed = vec![0_u8; plain.len() + 16];
     let mut opened = vec![0_u8; plain.len()];
-    let mut seal = RING.aead_aes_128_gcm().create_cipher([5_u8; 16], true);
+    let mut seal = Ring.aead_aes_128_gcm().create_cipher([5_u8; 16], true);
     seal.encrypt(&iv, aad, plain, &mut sealed).expect("sealed");
-    let mut open = RING.aead_aes_128_gcm().create_cipher([5_u8; 16], false);
+    let mut open = Ring.aead_aes_128_gcm().create_cipher([5_u8; 16], false);
     let n = open
         .decrypt(&iv, &[aad], &sealed, &mut opened)
         .expect("opened");
@@ -49,9 +49,9 @@ fn red_arm_the_gcm_ciphers_of_the_same_provider_seal_and_open() {
     assert!(open.decrypt(&iv, &[aad], &sealed, &mut opened).is_err());
 
     let mut sealed = vec![0_u8; plain.len() + 16];
-    let mut seal = RING.aead_aes_256_gcm().create_cipher([6_u8; 32], true);
+    let mut seal = Ring.aead_aes_256_gcm().create_cipher([6_u8; 32], true);
     seal.encrypt(&iv, aad, plain, &mut sealed).expect("sealed");
-    let mut open = RING.aead_aes_256_gcm().create_cipher([6_u8; 32], false);
+    let mut open = Ring.aead_aes_256_gcm().create_cipher([6_u8; 32], false);
     let n = open
         .decrypt(&iv, &[aad], &sealed, &mut opened)
         .expect("opened");
@@ -71,11 +71,37 @@ fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
         assert_eq!(shim.keyed(&material, profile), Err(AES_CM_REFUSED));
         assert!(!shim.holds_keying(), "profile {profile:#06x}: nothing held");
     }
-    // RED arm: the two AEAD-AES-GCM profiles are taken.
-    for profile in [PROFILE_AEAD_AES_128_GCM, PROFILE_AEAD_AES_256_GCM] {
+    // RED arm: the two AEAD-AES-GCM profiles are taken, at their own lengths.
+    for (profile, len) in [
+        (PROFILE_AEAD_AES_128_GCM, 56),
+        (PROFILE_AEAD_AES_256_GCM, 88),
+    ] {
         let shim = Shim::default();
-        assert_eq!(shim.keyed(&material, profile), Ok(()));
+        assert_eq!(shim.keyed(&[7_u8; 88][..len], profile), Ok(()));
         assert!(shim.holds_keying(), "profile {profile:#06x}: held");
+    }
+}
+
+/// Keying material whose length is not its profile's never reaches the media stack's key
+/// schedule (which asserts the length): it is refused, and nothing is held.
+#[test]
+fn keying_material_of_the_wrong_length_is_refused_and_nothing_is_held() {
+    for (profile, len) in [
+        (PROFILE_AEAD_AES_128_GCM, 55),
+        (PROFILE_AEAD_AES_128_GCM, 88),
+        (PROFILE_AEAD_AES_256_GCM, 56),
+        (PROFILE_AEAD_AES_256_GCM, 0),
+    ] {
+        let shim = Shim::default();
+        assert_eq!(
+            shim.keyed(&[7_u8; 88][..len], profile),
+            Err(crate::shim::KEYING_LENGTH_REFUSED)
+        );
+        assert!(!shim.holds_keying());
+        assert_eq!(
+            crate::shim::keying_frame(&[7_u8; 88][..len], profile).err(),
+            Some(crate::shim::KEYING_LENGTH_REFUSED)
+        );
     }
 }
 
@@ -85,7 +111,7 @@ fn the_srtp_key_derivation_block_is_aes() {
     let key: Vec<u8> = (0..16).collect();
     let input: Vec<u8> = (0..16).map(|i| i * 0x11).collect();
     let mut out = [0_u8; 16];
-    RING.srtp_aes_128_ecb_round(&key, &input, &mut out);
+    Ring.srtp_aes_128_ecb_round(&key, &input, &mut out);
     assert_eq!(
         out,
         [
@@ -94,6 +120,6 @@ fn the_srtp_key_derivation_block_is_aes() {
         ]
     );
     // A key of the wrong length derives nothing (a zeroed block), and nothing panics.
-    RING.srtp_aes_128_ecb_round(&key[..15], &input, &mut out);
+    Ring.srtp_aes_128_ecb_round(&key[..15], &input, &mut out);
     assert_eq!(out, [0_u8; 16]);
 }
