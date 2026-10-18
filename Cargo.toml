@@ -32,7 +32,6 @@ repository = "https://github.com/GetBusbar/busbar-transport-webrtc"
 busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "565f24f25e42370f3f8b5d8b2d91d56950eb4866" }
 busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "565f24f25e42370f3f8b5d8b2d91d56950eb4866" }
 # busbar's root [workspace.dependencies], third-party rows, at 565f24f25e42370f3f8b5d8b2d91d56950eb4866
-aes = { version = "0.8", default-features = false }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -85,7 +84,6 @@ sha2 = "0.10"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
-str0m = { version = "=0.24.1", default-features = false }
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 tar = { version = "0.4", default-features = false }
 tikv-jemalloc-ctl = "0.6"
