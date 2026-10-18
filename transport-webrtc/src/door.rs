@@ -14,7 +14,10 @@
 //!   state (bound path, verified bit, keying-material item, new paths) is read first, on every call
 //!   that carries a lane.
 //! * `emit`: one message for a stream (a channel's message, an Opus frame for a media line),
-//!   gathered until `end_of_frame`; [`EMIT_TEXT`] marks a channel message as text.
+//!   gathered until `end_of_frame`; [`EMIT_TEXT`] marks a channel message as text. A channel whose
+//!   held messages reach the framing's high-water mark answers [`YIELD_STREAM_FULL`] and is
+//!   writable again with a [`PIECE_WRITABLE`] piece; a channel that cannot carry a message fails
+//!   alone, with a [`PIECE_STREAM_FAILED`] piece.
 //! * `timer`: the clock; `finish`: the association closes.
 //! * `locate`, `encode`, `refuse`, `detach`, `adopt`: REFUSED (no authority to dial, no envelope,
 //!   no upgrade); every carrier op: REFUSED.
@@ -42,12 +45,12 @@ use busbar_contract::abi::transport::{
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
     CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
     HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_TEXT,
-    ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE,
+    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
+    UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
-use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MEDIA_BASE};
+use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
 
 // ── the statement ────────────────────────────────────────────────────────────────────────────────
 
@@ -213,13 +216,18 @@ fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Resu
 
 /// Answer into the sink and the lane what the framing owes: routes (bytes in `wire`), pieces (bytes
 /// in `frame`), the rendezvous terms, one path request, the deadline, and the flags.
+///
+/// # Errors
+///
+/// Rendezvous terms that even an empty frame buffer could not hold whole: the framing fails rather
+/// than answer YIELD_MORE with no progress.
 fn answer(
     h: &mut Held1,
     sink: Lent<'_, FramerSink>,
     lane: Option<Lent<'_, DatagramLane>>,
     now_ns: u64,
     o: &mut Out<'_, FramerOut>,
-) {
+) -> Result<(), String> {
     let mut wire = sink.wire();
     let mut frame = sink.frame();
     let mut pieces = sink.pieces();
@@ -291,6 +299,8 @@ fn answer(
                     span(candidates.as_bytes())
                 },
             };
+        } else if total > frame.cap() {
+            return Err("the rendezvous terms do not fit the host's frame buffer".into());
         } else {
             // Not room for them whole: the host drains and calls again.
             h.partial_terms(t);
@@ -305,6 +315,10 @@ fn answer(
         .or_else(|| h.f.next_piece().map(|p| (p, false)))
     {
         let room = frame.cap().saturating_sub(frame.asked());
+        if p.failed && p.bytes.len() > room && room > 0 {
+            // A failure's reason is never split: what fits of it is the reason.
+            p.bytes.truncate(room);
+        }
         if pieces.asked() >= pieces.cap() || (room == 0 && !p.bytes.is_empty()) {
             h.partial = Some((p, continued));
             more = true;
@@ -360,6 +374,7 @@ fn answer(
         o.set(|o| &o.yielded.next_deadline_ns, ns);
     }
     o.set(|o| &o.yielded.flags, flags);
+    Ok(())
 }
 
 impl Held1 {
@@ -368,14 +383,15 @@ impl Held1 {
     }
 }
 
-/// Run `op` on the framing `token` names, then answer what it owes.
+/// Run `op` on the framing `token` names, then answer what it owes, with the yield flags `op`
+/// answers besides.
 fn with(
     inst: &Instance<'_, State>,
     token: u64,
     sink: Lent<'_, FramerSink>,
     lane: Option<Lent<'_, DatagramLane>>,
     o: &mut Out<'_, FramerOut>,
-    op: impl FnOnce(&mut Held1, Instant) -> Result<(), String>,
+    op: impl FnOnce(&mut Held1, Instant) -> Result<u32, String>,
 ) -> Outcome {
     let s = match framings(inst) {
         Ok(s) => s,
@@ -391,16 +407,26 @@ fn with(
         Some(l) => host_state(h, l, now).and_then(|()| op(h, now)),
         None => op(h, now),
     };
-    if let Err(why) = run {
-        held.remove(&token);
-        return o.fail(Refusal::failed(why));
-    }
+    let extra = match run {
+        Ok(extra) => extra,
+        Err(why) => {
+            held.remove(&token);
+            return o.fail(Refusal::failed(why));
+        }
+    };
     if let Some(why) = h.f.failure() {
         let why = why.to_owned();
         held.remove(&token);
         return o.fail(Refusal::failed(why));
     }
-    answer(h, sink, lane, now_ns, o);
+    if let Err(why) = answer(h, sink, lane, now_ns, o) {
+        held.remove(&token);
+        return o.fail(Refusal::failed(why));
+    }
+    if extra != 0 {
+        let flags = o.get().yielded.flags;
+        o.set(|o| &o.yielded.flags, flags | extra);
+    }
     Outcome::Ready
 }
 
@@ -534,7 +560,9 @@ impl SafeSlot for Begin {
         if let Err(why) = host_state(&mut h, lane, base) {
             return o.fail(Refusal::failed(why));
         }
-        answer(&mut h, sink, Some(lane), now_ns, &mut o);
+        if let Err(why) = answer(&mut h, sink, Some(lane), now_ns, &mut o) {
+            return o.fail(Refusal::failed(why));
+        }
         let token = s.next.fetch_add(1, Ordering::Relaxed);
         s.lock().insert(token, h);
         o.set(|o| &o.framing, token);
@@ -565,28 +593,28 @@ impl SafeSlot for Ingest {
             Some(lane),
             &mut o,
             |h, now| {
-                if bytes.is_empty() {
-                    // The YIELD_MORE re-call (or a host-state-only call): nothing new.
-                    if ended {
-                        h.f.finish(now);
+                // Bytes first (none on the YIELD_MORE re-call or a host-state-only call), then the
+                // far side's end, whichever call carries it.
+                if !bytes.is_empty() {
+                    match lane.lane {
+                        LANE_RENDEZVOUS => h.f.rendezvous(bytes, now)?,
+                        LANE_CLEAR | LANE_SECURED => {
+                            let from = addr(lane.field(|l| &l.path_addr))
+                                .ok_or("ingest: a datagram with no address")?;
+                            let l = if lane.lane == LANE_CLEAR {
+                                Lane::Clear
+                            } else {
+                                Lane::Secured
+                            };
+                            h.f.datagram(lane.path, from, l, bytes, now);
+                        }
+                        _ => return Err("ingest: bytes on no lane".into()),
                     }
-                    return Ok(());
                 }
-                match lane.lane {
-                    LANE_RENDEZVOUS => h.f.rendezvous(bytes, now),
-                    LANE_CLEAR | LANE_SECURED => {
-                        let from = addr(lane.field(|l| &l.path_addr))
-                            .ok_or("ingest: a datagram with no address")?;
-                        let l = if lane.lane == LANE_CLEAR {
-                            Lane::Clear
-                        } else {
-                            Lane::Secured
-                        };
-                        h.f.datagram(lane.path, from, l, bytes, now);
-                        Ok(())
-                    }
-                    _ => Err("ingest: bytes on no lane".into()),
+                if ended {
+                    h.f.finish(now);
                 }
+                Ok(0)
             },
         )
     }
@@ -610,20 +638,35 @@ impl SafeSlot for Emit {
             i.lane(),
             &mut o,
             |h, now| {
-                if bytes.is_empty() && !end {
-                    return Ok(());
+                let full = |h: &Held1| {
+                    if h.f.stream_full(stream) {
+                        YIELD_STREAM_FULL
+                    } else {
+                        0
+                    }
+                };
+                if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
+                    return Ok(full(h));
                 }
                 let g = h.gathering.entry(stream).or_default();
+                if g.0.len() + bytes.len() > MAX_MESSAGE {
+                    // A message no channel could carry: its stream fails, alone, and nothing more
+                    // of it is gathered.
+                    h.gathering.remove(&stream);
+                    h.f.fail_stream(stream, "a message larger than the channel can ever send");
+                    return Ok(0);
+                }
                 g.0.extend_from_slice(bytes);
                 g.1 |= text;
                 if !end {
-                    return Ok(());
+                    return Ok(full(h));
                 }
                 let (message, text) = h.gathering.remove(&stream).unwrap_or_default();
                 if message.is_empty() {
-                    return Ok(());
+                    return Ok(full(h));
                 }
-                h.f.emit(stream, &message, text, now)
+                h.f.emit(stream, &message, text, now)?;
+                Ok(full(h))
             },
         )
     }
@@ -648,7 +691,7 @@ impl SafeSlot for Timer {
             &mut o,
             |h, now| {
                 h.f.timeout(now);
-                Ok(())
+                Ok(0)
             },
         )
     }
@@ -692,7 +735,7 @@ impl SafeSlot for Finish {
         let now = h.at(now_ns);
         h.f.finish(now);
         // What the close owes is answered once; what does not fit is dropped with the framing.
-        answer(&mut h, sink, i.lane(), now_ns, &mut o);
+        let _ = answer(&mut h, sink, i.lane(), now_ns, &mut o);
         let flags = o.get().yielded.flags & !(YIELD_MORE | YIELD_HAS_DEADLINE);
         o.set(|o| &o.yielded.next_deadline_ns, 0);
         o.set(|o| &o.yielded.flags, flags | YIELD_ENDED);
@@ -733,6 +776,13 @@ busbar_contract::plugin_door! {
 fn piece_flags(p: &Piece, continued: bool, whole: bool, n: usize) -> u16 {
     if p.end {
         return PIECE_END | PIECE_END_OF_FRAME;
+    }
+    if p.failed {
+        // A failed stream's last piece: its reason, whole (the door never splits it).
+        return PIECE_STREAM_FAILED | PIECE_END_OF_FRAME;
+    }
+    if p.writable {
+        return PIECE_WRITABLE;
     }
     let mut flags = 0_u16;
     if p.fields {

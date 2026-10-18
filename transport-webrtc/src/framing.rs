@@ -36,7 +36,7 @@
 //! * Keys are zeroised: the keying material this framing holds is cleared once handed on.
 
 use core::net::SocketAddr;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,7 +48,7 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, IceCreds, Input, Output, Rtc};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::shim::{self, Shim};
+use crate::shim;
 use crate::stun::{self, Check};
 
 /// The stream this end's own session description is yielded on.
@@ -65,6 +65,17 @@ pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 const MAX_HELD: usize = 256;
 /// The most nominating checks awaiting their answer.
 const MAX_NOMINATING: usize = 64;
+/// The most candidates read from the far end's description: the rendezvous terms stay small enough
+/// to fit a host's frame buffer whole.
+const MAX_CANDIDATES: usize = 32;
+/// The largest message a channel carries: the media stack's send buffer (its default), which a
+/// larger message could never enter.
+pub const MAX_MESSAGE: usize = 128 * 1024;
+/// A channel's held messages at which its stream is FULL (the host emits nothing more on it until
+/// its writable piece) ...
+const HIGH_WATER: usize = 64;
+/// ... and at or below which a full stream is writable again.
+const LOW_WATER: usize = 16;
 
 /// Which end of the association this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +120,10 @@ pub struct Piece {
     /// The stream ENDS here (its data channel closed): the door states it as its own empty piece
     /// with `PIECE_END`. An empty piece without it is an empty message, never the end.
     pub end: bool,
+    /// The stream FAILED here, alone; the bytes are the reason (never secret material).
+    pub failed: bool,
+    /// The stream is WRITABLE again after it was full: an empty piece, alone.
+    pub writable: bool,
 }
 
 /// A path request.
@@ -155,7 +170,14 @@ pub type Failed = String;
 pub struct Framing {
     side: Side,
     rtc: Rtc,
-    shim: Shim,
+    /// The description pair settled: the media stack's handshake slot takes the relay.
+    settled: bool,
+    /// What the framer owes its shim and could not hand it yet (the description pair is not
+    /// settled): keying, then "connected". Zeroed on drop.
+    relay: VecDeque<Zeroizing<Vec<u8>>>,
+    told_connected: bool,
+    /// The buffer an opened plaintext is relayed in, reused (zeroed between uses).
+    opened_buf: Zeroizing<Vec<u8>>,
     local: Option<SocketAddr>,
     local_creds: IceCreds,
     pending: Option<SdpPendingOffer>,
@@ -177,6 +199,10 @@ pub struct Framing {
     channels: HashMap<ChannelId, u64>,
     channel_by_stream: HashMap<u64, ChannelId>,
     held: HashMap<u64, VecDeque<(bool, Vec<u8>)>>,
+    /// Streams answered FULL and not yet writable again.
+    full: HashSet<u64>,
+    /// Streams that failed alone.
+    failed_streams: HashSet<u64>,
     next_channel: u64,
     medias: HashMap<Mid, u64>,
     media_by_stream: HashMap<u64, Mid>,
@@ -198,8 +224,8 @@ impl std::fmt::Debug for Framing {
 }
 
 impl Drop for Framing {
-    /// This framing's own copy of its check secret is cleared with it (the keying material is the
-    /// shim's, held zeroising).
+    /// This framing's own copy of its check secret is cleared with it (the keying material it has
+    /// not yet relayed is held zeroising).
     fn drop(&mut self) {
         self.local_creds.pass.zeroize();
     }
@@ -262,8 +288,18 @@ fn read_remote(description: &str) -> Result<Remote, Failed> {
                     Some(SocketAddr::new(ip, port.parse().ok()?))
                 })
         })
+        .take(MAX_CANDIDATES)
         .collect();
     Ok((user, secret, fingerprint, candidates))
+}
+
+/// Whether this end opens the handshake. The media stack takes the role opposite the far end's
+/// `a=setup:` (an `actpass` or absent one leaves this end passive), so this end initiates exactly
+/// when the far end said `passive`.
+fn initiates(description: &str) -> bool {
+    values(description, "a=setup:")
+        .next()
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("passive"))
 }
 
 /// A fresh check credential: `n` random bytes as lower-case hex (RFC 8445 §5.3: the user at least
@@ -313,8 +349,6 @@ impl Framing {
             ufrag: credential(4)?,
             pass: credential(16)?,
         };
-        let shim = Shim::default();
-        shim::arm(shim.clone());
         let config = Rtc::builder().set_crypto_provider(Arc::new(crate::crypto::provider()));
         let mut config = shim::present(config, certificate)
             .set_local_ice_credentials(local_creds.clone())
@@ -323,11 +357,13 @@ impl Framing {
             .enable_opus(true, false);
         config = config.set_stats_interval(None);
         let rtc = config.build(now);
-        let _ = shim::take_pending();
         let mut f = Framing {
             side,
             rtc,
-            shim,
+            settled: false,
+            relay: VecDeque::new(),
+            told_connected: false,
+            opened_buf: Zeroizing::new(Vec::new()),
             local: None,
             local_creds,
             pending: None,
@@ -348,6 +384,8 @@ impl Framing {
             channels: HashMap::new(),
             channel_by_stream: HashMap::new(),
             held: HashMap::new(),
+            full: HashSet::new(),
+            failed_streams: HashSet::new(),
             next_channel: 1,
             medias: HashMap::new(),
             media_by_stream: HashMap::new(),
@@ -395,6 +433,8 @@ impl Framing {
             fields: false,
             text: true,
             end: false,
+            failed: false,
+            writable: false,
         });
     }
 
@@ -475,12 +515,9 @@ impl Framing {
                     .map_err(|e| format!("the answer was refused: {e}"))?;
             }
         }
-        let initiates = self
-            .shim
-            .active()
-            .ok_or("the description settled no handshake role")?;
+        self.settled = true;
         self.terms = Some(Terms {
-            initiates,
+            initiates: initiates(text),
             local_user: self.local_creds.ufrag.clone(),
             local_secret: Zeroizing::new(self.local_creds.pass.clone()),
             remote_user,
@@ -488,6 +525,7 @@ impl Framing {
             peer_fingerprint,
             candidates,
         });
+        self.flush_relay(now);
         self.drain(now);
         Ok(())
     }
@@ -516,21 +554,50 @@ impl Framing {
             self.verified = true;
         }
         if let Some((profile, material)) = keying {
-            let material = Zeroizing::new(material.to_vec());
             if !self.verified {
                 return Err("keying material before the far end was verified".into());
             }
             if self.keyed {
                 return Err("keying material twice".into());
             }
-            self.shim.keyed(&material, profile)?;
+            self.relay.push_back(shim::keying_frame(material, profile)?);
             self.keyed = true;
         }
-        if self.verified && self.keyed {
-            self.shim.connected();
+        if self.verified && self.keyed && !self.told_connected {
+            self.told_connected = true;
+            self.relay
+                .push_back(Zeroizing::new(shim::CONNECTED_FRAME.to_vec()));
         }
+        self.flush_relay(now);
         self.drain(now);
         Ok(())
+    }
+
+    /// Hand the shim what it is owed, once the description pair settled (before that, the media
+    /// stack's handshake slot takes nothing).
+    fn flush_relay(&mut self, now: Instant) {
+        if !self.settled {
+            return;
+        }
+        while let Some(frame) = self.relay.pop_front() {
+            self.relay_one(&frame, now);
+        }
+    }
+
+    /// One datagram of the framer's own to its shim, through the media stack.
+    fn relay_one(&mut self, frame: &[u8], now: Instant) {
+        if self.failed.is_some() {
+            return;
+        }
+        let at = self
+            .local
+            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+        let Ok(receive) = Receive::new(Protocol::Udp, at, at, frame) else {
+            return;
+        };
+        if let Err(e) = self.rtc.handle_input(Input::Receive(now, receive)) {
+            self.fail(format!("the media stack refused the relay: {e}"));
+        }
     }
 
     /// One datagram from `path` on `lane`.
@@ -552,11 +619,18 @@ impl Framing {
         match lane {
             Lane::Secured => {
                 // Application data waits for peer verification.
-                if self.verified && self.keyed {
-                    self.shim.opened(bytes);
+                if self.verified && self.keyed && self.settled {
+                    let mut b = std::mem::replace(&mut self.opened_buf, Zeroizing::new(Vec::new()));
+                    shim::opened_frame(&mut b, bytes);
+                    self.relay_one(&b, now);
+                    self.opened_buf = b;
                     self.drain(now);
                 }
             }
+            // The range the media stack hands its handshake slot is the framer's own line to its
+            // shim: a far end's datagram in it is never fed (the host's secure layer keeps every
+            // record).
+            Lane::Clear if shim::is_relay_range(bytes) => {}
             Lane::Clear if stun::is_stun(bytes) => {
                 match stun::read(bytes) {
                     Some(Check::Request {
@@ -642,7 +716,7 @@ impl Framing {
         now: Instant,
     ) -> Result<(), Failed> {
         if let Some(mid) = self.media_by_stream.get(&stream).copied() {
-            if !(self.verified && self.keyed) {
+            if !(self.verified && self.keyed) || self.failed_streams.contains(&stream) {
                 return Ok(());
             }
             let clock = self.media_clock.entry(stream).or_insert(0);
@@ -658,35 +732,88 @@ impl Framing {
             let Some(pt) = pt else {
                 return Err("the media line carries no Opus".into());
             };
-            writer
-                .write(
-                    pt,
-                    now,
-                    MediaTime::new(at, Frequency::FORTY_EIGHT_KHZ),
-                    bytes.to_vec(),
-                )
-                .map_err(|e| format!("the media frame was refused: {e}"))?;
+            if let Err(e) = writer.write(
+                pt,
+                now,
+                MediaTime::new(at, Frequency::FORTY_EIGHT_KHZ),
+                bytes.to_vec(),
+            ) {
+                self.fail_stream(stream, &format!("the media frame was refused: {e}"));
+            }
             self.drain(now);
             return Ok(());
         }
         let Some(id) = self.channel_by_stream.get(&stream).copied() else {
             return Err(format!("no stream {stream} on this association"));
         };
+        if self.failed_streams.contains(&stream) {
+            // The host was told; what it still emits there is dropped.
+            return Ok(());
+        }
+        if bytes.len() > MAX_MESSAGE {
+            self.fail_stream(stream, "a message larger than the channel can ever send");
+            self.drain(now);
+            return Ok(());
+        }
+        // A message never overtakes one held before it: while any is held, it queues behind.
+        let queued = self.held.get(&stream).is_some_and(|q| !q.is_empty());
         let sent = match self.rtc.channel(id) {
-            Some(mut ch) => ch
-                .write(!text, bytes)
-                .map_err(|e| format!("the channel refused the message: {e}"))?,
-            None => false,
+            Some(mut ch) if !queued => match ch.write(!text, bytes) {
+                Ok(sent) => sent,
+                Err(e) => {
+                    self.fail_stream(stream, &format!("the channel refused the message: {e}"));
+                    self.drain(now);
+                    return Ok(());
+                }
+            },
+            _ => false,
         };
         if !sent {
             let held = self.held.entry(stream).or_default();
             if held.len() >= MAX_HELD {
-                return Err("too many messages held for a channel not yet open".into());
+                // A host that kept emitting past the FULL mark: the stream fails, alone.
+                self.fail_stream(stream, "too many messages held for the channel");
+                self.drain(now);
+                return Ok(());
             }
             held.push_back((text, bytes.to_vec()));
+            if held.len() >= HIGH_WATER {
+                self.full.insert(stream);
+            }
         }
         self.drain(now);
         Ok(())
+    }
+
+    /// Stream `stream` fails, alone: its held messages are dropped and the layer above gets its
+    /// failure piece, once. The association and every other stream carry on.
+    pub fn fail_stream(&mut self, stream: u64, why: &str) {
+        if !self.failed_streams.insert(stream) {
+            return;
+        }
+        self.held.remove(&stream);
+        self.full.remove(&stream);
+        self.pieces.push_back(Piece {
+            stream,
+            bytes: why.as_bytes().to_vec(),
+            fields: false,
+            text: false,
+            end: false,
+            failed: true,
+            writable: false,
+        });
+    }
+
+    /// Whether `stream` is FULL: the host emits nothing more on it until its writable piece.
+    #[must_use]
+    pub fn stream_full(&self, stream: u64) -> bool {
+        self.full.contains(&stream)
+    }
+
+    /// Whether `stream` failed.
+    #[must_use]
+    pub fn stream_failed(&self, stream: u64) -> bool {
+        self.failed_streams.contains(&stream)
     }
 
     /// The clock reached `now`.
@@ -746,29 +873,18 @@ impl Framing {
             fields: true,
             text: false,
             end: false,
+            failed: false,
+            writable: false,
         });
     }
 
     /// Run the media stack until it waits, collecting what it owes.
     fn drain(&mut self, now: Instant) {
-        // Messages held for channels that have since opened.
-        let open: Vec<u64> = self.held.keys().copied().collect();
-        for stream in open {
-            let Some(id) = self.channel_by_stream.get(&stream).copied() else {
-                continue;
-            };
-            while let Some((text, bytes)) = self.held.get_mut(&stream).and_then(VecDeque::pop_front)
-            {
-                let sent = self
-                    .rtc
-                    .channel(id)
-                    .is_some_and(|mut ch| ch.write(!text, &bytes).unwrap_or(false));
-                if !sent {
-                    if let Some(q) = self.held.get_mut(&stream) {
-                        q.push_front((text, bytes));
-                    }
-                    break;
-                }
+        // Messages held for channels that have since opened (or that had no room), in order.
+        if !self.held.is_empty() {
+            let streams: Vec<u64> = self.held.keys().copied().collect();
+            for stream in streams {
+                self.flush_held(stream);
             }
         }
         for _ in 0..10_000 {
@@ -779,15 +895,13 @@ impl Framing {
                     return;
                 }
             };
-            // What the stack handed the shim to seal during this poll (an SCTP packet is queued
-            // there, never transmitted), routed whatever the poll answered.
             let waits = match out {
                 Output::Timeout(t) => {
                     self.next_timeout = Some(t.max(now));
                     true
                 }
                 Output::Transmit(t) => {
-                    self.transmit(t.destination, &t.contents);
+                    self.transmit(t.destination, t.contents.into());
                     false
                 }
                 Output::Event(e) => {
@@ -795,15 +909,6 @@ impl Framing {
                     false
                 }
             };
-            while let Some(plain) = self.shim.take_to_seal() {
-                if self.bound != 0 && self.routes.len() < MAX_HELD * 4 {
-                    self.routes.push_back(Route {
-                        bytes: plain,
-                        path: self.bound,
-                        lane: Lane::Secured,
-                    });
-                }
-            }
             if waits {
                 break;
             }
@@ -813,16 +918,62 @@ impl Framing {
         }
     }
 
-    fn transmit(&mut self, to: SocketAddr, bytes: &[u8]) {
+    /// A held queue's messages, in order, while the media stack takes them. A full stream drained
+    /// to its low-water mark is writable again; a write the stack refuses fails the stream alone.
+    fn flush_held(&mut self, stream: u64) {
+        let Some(id) = self.channel_by_stream.get(&stream).copied() else {
+            return;
+        };
+        let mut refused = None;
+        while let Some((text, bytes)) = self.held.get_mut(&stream).and_then(VecDeque::pop_front) {
+            let sent = match self.rtc.channel(id) {
+                Some(mut ch) => match ch.write(!text, &bytes) {
+                    Ok(sent) => sent,
+                    Err(e) => {
+                        refused = Some(format!("the channel refused the message: {e}"));
+                        break;
+                    }
+                },
+                None => false,
+            };
+            if !sent {
+                if let Some(q) = self.held.get_mut(&stream) {
+                    q.push_front((text, bytes));
+                }
+                break;
+            }
+        }
+        if let Some(why) = refused {
+            self.fail_stream(stream, &why);
+            return;
+        }
+        let left = self.held.get(&stream).map_or(0, VecDeque::len);
+        if left == 0 {
+            self.held.remove(&stream);
+        }
+        if left <= LOW_WATER && self.full.remove(&stream) {
+            self.pieces.push_back(Piece {
+                stream,
+                bytes: Vec::new(),
+                fields: false,
+                text: false,
+                end: false,
+                failed: false,
+                writable: true,
+            });
+        }
+    }
+
+    fn transmit(&mut self, to: SocketAddr, bytes: Vec<u8>) {
         if self.routes.len() >= MAX_HELD * 4 {
             return;
         }
-        if stun::is_stun(bytes) {
+        if stun::is_stun(&bytes) {
             let Some(path) = self.addrs.get(&to).copied() else {
                 // An address the host never judged or heard: nothing goes there.
                 return;
             };
-            match stun::read(bytes) {
+            match stun::read(&bytes) {
                 Some(Check::Success { txid })
                     if self.side == Side::Accept && self.nominating.remove(&txid) == Some(path) =>
                 {
@@ -837,19 +988,34 @@ impl Framing {
                 _ => {}
             }
             self.routes.push_back(Route {
-                bytes: bytes.to_vec(),
+                bytes,
                 path,
                 lane: Lane::Clear,
             });
             return;
         }
-        // Protected media goes to the host's bound path, whatever the stack chose.
-        if self.bound != 0 && self.verified && self.keyed {
-            self.routes.push_back(Route {
-                bytes: bytes.to_vec(),
-                path: self.bound,
-                lane: Lane::Clear,
-            });
+        match shim::sealed(bytes) {
+            // What the media stack handed its shim to seal (an SCTP packet): the host seals it, to
+            // the bound path.
+            Ok(plain) => {
+                if self.bound != 0 {
+                    self.routes.push_back(Route {
+                        bytes: plain,
+                        path: self.bound,
+                        lane: Lane::Secured,
+                    });
+                }
+            }
+            // Protected media goes to the host's bound path, whatever the stack chose.
+            Err(bytes) => {
+                if self.bound != 0 && self.verified && self.keyed {
+                    self.routes.push_back(Route {
+                        bytes,
+                        path: self.bound,
+                        lane: Lane::Clear,
+                    });
+                }
+            }
         }
     }
 
@@ -872,22 +1038,35 @@ impl Framing {
                     return;
                 }
                 let s = self.channel_stream(d.id);
+                if self.failed_streams.contains(&s) {
+                    return;
+                }
                 self.pieces.push_back(Piece {
                     stream: s,
                     bytes: d.data,
                     fields: false,
                     text: !d.binary,
                     end: false,
+                    failed: false,
+                    writable: false,
                 });
             }
             Event::ChannelClose(id) => {
                 if let Some(s) = self.channels.get(&id).copied() {
+                    if self.failed_streams.contains(&s) {
+                        // A failed stream already ended, failed.
+                        return;
+                    }
+                    self.held.remove(&s);
+                    self.full.remove(&s);
                     self.pieces.push_back(Piece {
                         stream: s,
                         bytes: Vec::new(),
                         fields: false,
                         text: false,
                         end: true,
+                        failed: false,
+                        writable: false,
                     });
                 }
             }
@@ -902,13 +1081,20 @@ impl Framing {
                 if !(self.verified && self.keyed) || self.pieces.len() >= MAX_HELD * 4 {
                     return;
                 }
-                if let Some(s) = self.medias.get(&d.mid).copied() {
+                if let Some(s) = self
+                    .medias
+                    .get(&d.mid)
+                    .copied()
+                    .filter(|s| !self.failed_streams.contains(s))
+                {
                     self.pieces.push_back(Piece {
                         stream: s,
                         bytes: d.data.to_vec(),
                         fields: false,
                         text: false,
                         end: false,
+                        failed: false,
+                        writable: false,
                     });
                 }
             }
@@ -984,10 +1170,10 @@ impl Framing {
         self.nominated
     }
 
-    /// Whether keying material is held un-handed (it is cleared once the stack took it).
+    /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
     #[must_use]
     pub fn holds_keying(&self) -> bool {
-        self.shim.holds_keying()
+        self.relay.iter().any(|f| shim::is_keying(f))
     }
 
     /// How long until `deadline`, from `now`.
