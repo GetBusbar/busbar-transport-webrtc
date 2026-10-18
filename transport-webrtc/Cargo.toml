@@ -26,7 +26,9 @@ crate-type = ["rlib"]
 # busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy
 # of the contract links.
 busbar-contract = { workspace = true }
-str0m = { workspace = true }
+# str0m and aes are pinned here, in this crate's own manifest: busbar's tables dropped them when the
+# framer left busbar (#964), and no busbar member inherits them.
+str0m = { version = "=0.24.1", default-features = false }
 ring = { workspace = true }
-aes = { workspace = true, features = ["zeroize"] }
+aes = { version = "0.8", default-features = false, features = ["zeroize"] }
 zeroize = { workspace = true }
