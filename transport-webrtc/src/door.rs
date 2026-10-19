@@ -45,8 +45,9 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use busbar_contract::abi::host::service::{AuthRef, UnitRef, FLOW_CONTINUE};
-use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
@@ -58,11 +59,12 @@ use busbar_contract::abi::transport::{
     ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
     FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
-    HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
-    UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_NOTHING_MOVED, EMIT_TEXT, EXT_OFFERED_POINTS, FACT_ACCEPTS, FACT_DIALS,
+    FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR,
+    LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_CONTINUED,
+    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE,
+    YIELD_MORE, YIELD_STREAM_FULL,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
@@ -102,7 +104,8 @@ const TAIL: TransportTail = TransportTail {
     },
     role: ROLE_FRAMER,
     framing: FRAMING_DATAGRAM,
-    facts: 0,
+    // The ops it declares: an association is accepted (it answers an offer) or dialled (it offers).
+    facts: FACT_ACCEPTS | FACT_DIALS,
     handshake_max_steps: 0,
     composes_over: std::ptr::null(),
     composes_over_len: 0,
@@ -127,9 +130,25 @@ const TAIL: TransportTail = TransportTail {
     _reserved: 0,
 };
 
+/// THE AUTH POINTS THIS TRANSPORT OFFERS ([`EXT_OFFERED_POINTS`], THE DESIGN §6 "Auth points and
+/// guest lists", item 1): [`POINT_PEER`] alone. An association carries no head, so it offers
+/// neither [`POINT_HEAD`] nor [`POINT_HEAD_BODY`] (the default of a transport that states no record).
+const OFFERED_POINTS: [u8; 4] = POINT_PEER.to_le_bytes();
+
+/// The Statement's extensions: the offered-points record, built at compile time.
+const EXTENSIONS: &[u8] = &extensions::entry::<
+    { extensions::entry_len(EXT_OFFERED_POINTS, &OFFERED_POINTS) },
+>(EXT_OFFERED_POINTS, &OFFERED_POINTS);
+
 /// The door's Statement.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
+    extensions: Blob {
+        ptr: EXTENSIONS.as_ptr(),
+        len: EXTENSIONS.len(),
+        fmt: BLOB_OCTETS,
+        ..Blob::ZERO
+    },
     claims: CLAIM_NAMES.as_ptr(),
     claims_len: CLAIM_NAMES.len(),
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)

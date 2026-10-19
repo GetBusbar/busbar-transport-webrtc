@@ -232,3 +232,15 @@ fn points_and_ref_agree_or_the_begin_is_refused() {
         "no call is made for any of them"
     );
 }
+
+/// THE OFFERED POINTS (THE DESIGN §6 item 1; `EXT_OFFERED_POINTS`): the Statement states that this
+/// transport offers the peer point alone, so boot refuses any binding that needs a head point on
+/// it; and the tail declares the ops it serves, accepting and dialling.
+#[test]
+fn the_statement_offers_the_peer_point_alone_and_declares_accept_and_dial() {
+    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_contract::abi::transport::check::check_offered_points;
+    assert_eq!(STATEMENT.extensions.len, EXTENSIONS.len());
+    assert_eq!(check_offered_points(EXTENSIONS), Ok(AuthPoints::PEER));
+    assert_eq!(TAIL.facts, FACT_ACCEPTS | FACT_DIALS);
+}
