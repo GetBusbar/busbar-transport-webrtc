@@ -511,3 +511,75 @@ fn a_far_ends_candidates_are_read_up_to_a_bound() {
         candidates.len()
     );
 }
+
+/// ICE'S "DISCONNECTED" IS RECOVERABLE (Q128 transport-webrtc LOW, reader r171 on 78941e3; RFC
+/// 8445 and the media stack's own state: a disconnected agent may come back as it checks pairs
+/// again): the association holds through it, comes back on its own when the path returns, and
+/// ends only when the path stays gone past [`ICE_FAILED_AFTER`]. RED before the fix: the first
+/// "disconnected" ended the association, so a network switch slower than the pair timeout ended
+/// the call.
+#[test]
+fn an_ice_disconnect_holds_the_association_until_it_fails() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    dial.f.event(Event::IceConnectionStateChange(
+        IceConnectionState::Disconnected,
+    ));
+    assert!(!dial.f.ended(), "a disconnect is not an end");
+    dial.f.event(Event::IceConnectionStateChange(
+        IceConnectionState::Connected,
+    ));
+    dial.f
+        .timeout(now + ICE_FAILED_AFTER + Duration::from_secs(1));
+    assert!(!dial.f.ended(), "a path that came back carries on");
+
+    let at = now + ICE_FAILED_AFTER + Duration::from_secs(2);
+    dial.f.timeout(at);
+    dial.f.event(Event::IceConnectionStateChange(
+        IceConnectionState::Disconnected,
+    ));
+    dial.f
+        .timeout(at + ICE_FAILED_AFTER - Duration::from_secs(1));
+    assert!(!dial.f.ended(), "inside the window the association holds");
+    dial.f
+        .timeout(at + ICE_FAILED_AFTER + Duration::from_secs(1));
+    assert!(
+        dial.f.ended(),
+        "a path gone past the window has failed: the association ends"
+    );
+}
+
+/// AN ACKNOWLEDGED MESSAGE IS NEVER DROPPED SILENTLY (Q128 transport-webrtc LOW, reader r171 on
+/// 78941e3): a data channel's message the reliable channel has already acknowledged, arriving
+/// while the framer's piece queue is at its cap, fails its stream loudly (its failure piece), so
+/// the layer above knows the stream lost data. RED before the fix: the message vanished.
+#[test]
+fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
+    let (mut dial, _accept, _now) = connected();
+    let (&id, &stream) = dial.f.channels.iter().next().expect("an open channel");
+    while dial.f.pieces.len() < MAX_HELD * 4 {
+        dial.f.pieces.push_back(Piece {
+            stream: 99,
+            bytes: vec![0],
+            fields: false,
+            text: false,
+            end: false,
+            failed: false,
+            writable: false,
+        });
+    }
+    dial.f
+        .event(Event::ChannelData(str0m::channel::ChannelData {
+            id,
+            binary: true,
+            data: vec![7],
+        }));
+    assert!(
+        dial.f.stream_failed(stream),
+        "the stream that lost data fails"
+    );
+    assert!(
+        dial.f.pieces.iter().any(|p| p.stream == stream && p.failed),
+        "with its failure piece"
+    );
+}
