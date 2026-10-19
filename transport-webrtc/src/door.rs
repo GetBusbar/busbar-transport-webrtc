@@ -43,11 +43,12 @@ use busbar_contract::abi::transport::{
     ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
     FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
-    HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
-    UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_NOTHING_MOVED, EMIT_TEXT, FACT_ACCEPTS, FACT_DIALS, FRAME_PIECE_SIZE, FRAMING_DATAGRAM,
+    HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
+    PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME,
+    PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT,
+    SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
@@ -90,7 +91,10 @@ const TAIL: TransportTail = TransportTail {
     },
     role: ROLE_FRAMER,
     framing: FRAMING_DATAGRAM,
-    facts: 0,
+    // Its ops (coordinator ruling L1): `begin` on either side (it answers an offer, or yields its
+    // own). An association is never handed to another framer (RFC 8831 defines data channels over
+    // one SCTP association, with no hand-off), so detach (REFUSED) and adopt are absent.
+    facts: FACT_ACCEPTS | FACT_DIALS,
     handshake_max_steps: 0,
     composes_over: std::ptr::null(),
     composes_over_len: 0,
