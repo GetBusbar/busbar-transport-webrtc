@@ -19,23 +19,39 @@
 //!   writable again with a [`PIECE_WRITABLE`] piece; a channel that cannot carry a message fails
 //!   alone, with a [`PIECE_STREAM_FAILED`] piece.
 //! * `timer`: the clock; `finish`: the association closes.
+//! * THE BINDING'S AUTH (ruling 23; THE DESIGN §6, "Auth points and guest lists", items 5 and 7):
+//!   a dialled `begin` whose binding has an auth ([`BeginIn::points`], [`BeginIn::auth`]) calls it
+//!   through the host ([`op::AUTH_CALL`](busbar_contract::abi::host::service::op::AUTH_CALL)) at
+//!   [`POINT_PEER`] ONCE, before the association exists (`auth_gate`). An association carries no
+//!   head: its session description goes up as the body of the signalling exchange, whose head the
+//!   framer serving that exchange renders and signs. So a binding that needs [`POINT_HEAD`] or
+//!   [`POINT_HEAD_BODY`] on this media path is refused, as is an unknown point, a stop, a host that
+//!   serves no auth call, and a ref the host refuses (stale or foreign).
 //! * `locate`, `encode`, `refuse`, `detach`, `adopt`: REFUSED (no authority to dial, no envelope,
 //!   no upgrade); every carrier op: REFUSED.
 //!
 //! A full host buffer is back-pressure: READY with [`YIELD_MORE`], and the re-call carries no new
-//! bytes. No op pends.
+//! bytes. Only a dialled `begin` pends, on its own peer-point auth call: nothing of the association
+//! exists yet, so the pend parks that one dial and no other stream; the resumed `begin` re-issues
+//! the same completion handle and reads the stored answer.
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
+use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+use busbar_contract::abi::host::service::{AuthRef, UnitRef, FLOW_CONTINUE};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+use busbar_contract::abi::mechanism::extensions;
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+use busbar_contract::abi::sdk::services::{HeadViewArgs, ServiceError, Services};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::check::check_keying;
 use busbar_contract::abi::transport::{
@@ -43,11 +59,12 @@ use busbar_contract::abi::transport::{
     ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
     FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
-    HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
-    UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_NOTHING_MOVED, EMIT_TEXT, EXT_OFFERED_POINTS, FACT_ACCEPTS, FACT_DIALS,
+    FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR,
+    LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_CONTINUED,
+    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE,
+    YIELD_MORE, YIELD_STREAM_FULL,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
@@ -87,7 +104,8 @@ const TAIL: TransportTail = TransportTail {
     },
     role: ROLE_FRAMER,
     framing: FRAMING_DATAGRAM,
-    facts: 0,
+    // The ops it declares: an association is accepted (it answers an offer) or dialled (it offers).
+    facts: FACT_ACCEPTS | FACT_DIALS,
     handshake_max_steps: 0,
     composes_over: std::ptr::null(),
     composes_over_len: 0,
@@ -112,9 +130,25 @@ const TAIL: TransportTail = TransportTail {
     _reserved: 0,
 };
 
+/// THE AUTH POINTS THIS TRANSPORT OFFERS ([`EXT_OFFERED_POINTS`], THE DESIGN §6 "Auth points and
+/// guest lists", item 1): [`POINT_PEER`] alone. An association carries no head, so it offers
+/// neither [`POINT_HEAD`] nor [`POINT_HEAD_BODY`] (the default of a transport that states no record).
+const OFFERED_POINTS: [u8; 4] = POINT_PEER.to_le_bytes();
+
+/// The Statement's extensions: the offered-points record, built at compile time.
+const EXTENSIONS: &[u8] = &extensions::entry::<
+    { extensions::entry_len(EXT_OFFERED_POINTS, &OFFERED_POINTS) },
+>(EXT_OFFERED_POINTS, &OFFERED_POINTS);
+
 /// The door's Statement.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
+    extensions: Blob {
+        ptr: EXTENSIONS.as_ptr(),
+        len: EXTENSIONS.len(),
+        fmt: BLOB_OCTETS,
+        ..Blob::ZERO
+    },
     claims: CLAIM_NAMES.as_ptr(),
     claims_len: CLAIM_NAMES.len(),
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
@@ -156,7 +190,8 @@ pub struct Framings {
 type State = Held<Framings>;
 
 impl Life for Framings {
-    /// No framer op pends, so a cancel finds nothing in flight.
+    /// Only a dialled `begin` pends (its peer-point auth call), before its association exists, so a
+    /// cancel finds nothing of this framer's moved.
     const CANCEL: u32 = CANCEL_NOTHING_MOVED;
 
     /// This framer reads no setting.
@@ -516,7 +551,108 @@ fn certificate<'a>(i: &Lent<'a, BeginIn>) -> Option<&'a [u8]> {
     (!der.is_empty()).then_some(der)
 }
 
-/// `begin`: an accepting framing waits for the offer; a dialling one yields its offer now.
+// ── the binding's auth ───────────────────────────────────────────────────────────────────────────
+
+// This crate's own seal over what an auth call answers (`Services::auth_call`). At the peer point
+// the answer carries no field, so nothing is ever read under it.
+busbar_contract::own_seal!(Own);
+
+/// The completion handle's sequence the peer-point call is made under, on the `begin`'s ticket.
+const SEQ_PEER: u32 = 1;
+
+/// The binding's auth at [`POINT_PEER`], through the host: the flow it answers
+/// ([`FLOW_CONTINUE`] goes on), PENDING while it is not ready.
+pub(crate) trait PeerAuth {
+    /// One call at the peer point on `handle`, for `auth`.
+    fn peer(&self, handle: CompletionHandle, auth: AuthRef) -> Poll<Result<u32, ServiceError>>;
+}
+
+impl PeerAuth for Services {
+    fn peer(&self, handle: CompletionHandle, auth: AuthRef) -> Poll<Result<u32, ServiceError>> {
+        self.auth_call::<Own>(
+            handle,
+            auth,
+            UnitRef::NONE,
+            POINT_PEER,
+            0,
+            0,
+            &HeadViewArgs::default(),
+            None,
+        )
+        .map(|answer| answer.map(|called| called.flow))
+    }
+}
+
+/// What the binding's auth lets a `begin` do.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// Begin the association.
+    Go,
+    /// The auth's answer is not ready: the `begin` pends on its ticket and nothing is begun.
+    Pend,
+    /// Refused, with why: no association, nothing sent.
+    Refuse(&'static str),
+}
+
+/// THE BINDING'S AUTH ON A `begin` (ruling 23; THE DESIGN §6 "Auth points and guest lists", items
+/// 5 and 7; [`BeginIn::points`], [`BeginIn::auth`]).
+///
+/// * An accepting side carries no binding: points or a ref there are refused.
+/// * A dial with no points goes on with no call; points and a ref come together or not at all.
+/// * [`POINT_HEAD`] and [`POINT_HEAD_BODY`] are refused: an association is media (ICE, SRTP, SCTP)
+///   and carries no head. Its description goes up as the body of the signalling exchange, and the
+///   framer serving that exchange renders its head and calls the auth over it.
+/// * A point outside [`POINT_PEER`] | [`POINT_HEAD`] | [`POINT_HEAD_BODY`] is refused.
+/// * [`POINT_PEER`]: the auth is called ONCE, at this `begin`, before the association exists, on
+///   the op's ticket. A host that serves no auth call refuses the dial; PENDING pends only this
+///   `begin`; a stop refuses; a call the host refuses (a stale or foreign ref, one it did not
+///   mint) refuses.
+pub(crate) fn auth_gate(
+    dial: bool,
+    points: u32,
+    auth: AuthRef,
+    ticket: Ticket,
+    host: Option<&dyn PeerAuth>,
+) -> Gate {
+    if !dial {
+        return if points == 0 && auth.is_none() {
+            Gate::Go
+        } else {
+            Gate::Refuse("begin: an accepted association carries no binding auth")
+        };
+    }
+    if points == 0 && auth.is_none() {
+        return Gate::Go;
+    }
+    if points == 0 || auth.is_none() {
+        return Gate::Refuse("begin: the binding's auth points and its ref do not agree");
+    }
+    if points & !(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY) != 0 {
+        return Gate::Refuse("begin: the binding's auth needs a point this framer does not serve");
+    }
+    if points & (POINT_HEAD | POINT_HEAD_BODY) != 0 {
+        return Gate::Refuse(
+            "begin: an association carries no head; the signalling exchange's framer signs it",
+        );
+    }
+    let Some(host) = host else {
+        return Gate::Refuse("begin: the binding has an auth and the host serves no auth call");
+    };
+    let handle = CompletionHandle {
+        ticket,
+        seq: SEQ_PEER,
+        _reserved: 0,
+    };
+    match host.peer(handle, auth) {
+        Poll::Pending => Gate::Pend,
+        Poll::Ready(Ok(FLOW_CONTINUE)) => Gate::Go,
+        Poll::Ready(Ok(_)) => Gate::Refuse("begin: the binding's auth stopped the connection"),
+        Poll::Ready(Err(_)) => Gate::Refuse("begin: the host refused the binding's auth call"),
+    }
+}
+
+/// `begin`: an accepting framing waits for the offer; a dialling one yields its offer now, once
+/// its binding's auth lets it (`auth_gate`).
 pub struct Begin;
 impl SafeSlot for Begin {
     type In = BeginIn;
@@ -539,6 +675,18 @@ impl SafeSlot for Begin {
         let Some(lane) = i.lane() else {
             return o.fail(Refusal::failed("begin: a datagram framer reads its lane"));
         };
+        let services = inst.get().and_then(Held::host).and_then(|h| h.services());
+        match auth_gate(
+            matches!(side, Side::Dial),
+            i.points,
+            i.auth,
+            i.head.ticket,
+            services.as_ref().map(|s| s as &dyn PeerAuth),
+        ) {
+            Gate::Go => {}
+            Gate::Pend => return Outcome::Pending,
+            Gate::Refuse(why) => return o.fail(Refusal::failed(why)),
+        }
         let Some(cert) = certificate(&i) else {
             return o.fail(Refusal::failed("begin: the host presented no certificate"));
         };
