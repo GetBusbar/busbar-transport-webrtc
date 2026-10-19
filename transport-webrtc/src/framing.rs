@@ -214,6 +214,11 @@ pub struct Framing {
     media_by_stream: HashMap<u64, Mid>,
     media_clock: HashMap<u64, u64>,
     next_timeout: Option<Instant>,
+    /// When ICE went "disconnected" and has not come back; past [`ICE_FAILED_AFTER`] the path has
+    /// failed and the association ends.
+    disconnected_since: Option<Instant>,
+    /// The clock the last call ran at: an event the media stack hands up is stamped with it.
+    now: Option<Instant>,
     failed: Option<Failed>,
     ended: bool,
 }
@@ -397,6 +402,8 @@ impl Framing {
             media_by_stream: HashMap::new(),
             media_clock: HashMap::new(),
             next_timeout: None,
+            disconnected_since: None,
+            now: None,
             failed: None,
             ended: false,
         };
@@ -886,6 +893,7 @@ impl Framing {
 
     /// Run the media stack until it waits, collecting what it owes.
     fn drain(&mut self, now: Instant) {
+        self.now = Some(now);
         // Messages held for channels that have since opened (or that had no room), in order.
         if !self.held.is_empty() {
             let streams: Vec<u64> = self.held.keys().copied().collect();
@@ -921,6 +929,15 @@ impl Framing {
         }
         if !self.rtc.is_alive() && self.failed.is_none() {
             self.ended = true;
+        }
+        // A path disconnected past the window has failed; inside it, wake when it would.
+        if let Some(since) = self.disconnected_since {
+            let fails_at = since + ICE_FAILED_AFTER;
+            if now >= fails_at {
+                self.ended = true;
+            } else {
+                self.next_timeout = Some(self.next_timeout.map_or(fails_at, |t| t.min(fails_at)));
+            }
         }
     }
 
@@ -1029,8 +1046,15 @@ impl Framing {
         match e {
             Event::IceConnectionStateChange(s) => {
                 self.ice = s;
+                // "Disconnected" may come back as the agent checks pairs again (a network switch
+                // slower than the pair timeout): it holds the association, and only a path gone
+                // past ICE_FAILED_AFTER ends it (`drain`).
                 if s == IceConnectionState::Disconnected {
-                    self.ended = true;
+                    if self.disconnected_since.is_none() {
+                        self.disconnected_since = self.now;
+                    }
+                } else {
+                    self.disconnected_since = None;
                 }
             }
             Event::ChannelOpen(id, label) => {
@@ -1040,11 +1064,20 @@ impl Framing {
             Event::ChannelData(d) => {
                 // Application data waits for peer verification (the shim hands none up before it,
                 // so this is the second lock on the same door).
-                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_HELD * 4 {
+                if !(self.verified && self.keyed) {
                     return;
                 }
                 let s = self.channel_stream(d.id);
                 if self.failed_streams.contains(&s) {
+                    return;
+                }
+                // The reliable channel already acknowledged this message to the peer: dropping it
+                // loses it unseen, so the stream that cannot take it fails, loudly, alone.
+                if self.pieces.len() >= MAX_HELD * 4 {
+                    self.fail_stream(
+                        s,
+                        "the data channel's messages outran the host: its queue reached the cap",
+                    );
                     return;
                 }
                 self.pieces.push_back(Piece {
