@@ -18,6 +18,7 @@
 //! THE RED ARM, kept: the dropped-in library admitted against a Statement rendering that is not its
 //! own is refused, so the equality the witness asserts is between two admitted doors.
 
+use busbar_contract::abi::host::service::SCHEME_SECURE;
 use busbar_contract::abi::mechanism::call::{AbiStr, Field};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, DatagramLane, DatagramRoute, EncodeIn, FinishIn, FramePiece,
@@ -170,6 +171,8 @@ fn begin(p: &Plugin<Transport>, side: u32, lane: bool) -> (String, u64) {
     let l = host.lane(0);
     let mut i: BeginIn = conf::input();
     i.side = side;
+    // The host declares every connection's scheme; an association is secured by the host's layer.
+    i.scheme = SCHEME_SECURE;
     i.facts = &facts;
     i.sink = host.sink();
     if side == SIDE_DIAL {
