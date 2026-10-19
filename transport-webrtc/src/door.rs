@@ -60,6 +60,7 @@ pub const KEY: &str = "webrtc";
 const NONE: AbiStr = AbiStr {
     ptr: std::ptr::null(),
     len: 0,
+    ..AbiStr::ZERO
 };
 
 const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
@@ -77,6 +78,7 @@ const CLAIMS: &[Claim] = &[Claim {
     unit0_trigger: UNIT0_FIRST_DATAGRAM,
     status_at: 0,
     _reserved: 0,
+    ..Claim::ZERO
 }];
 
 /// The transport kind's tail: a datagram framer, composing over nothing (the port is the host's).
@@ -84,6 +86,7 @@ const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
         size: std::mem::size_of::<TransportTail>() as u32,
         _reserved: 0,
+        ..KindTailHead::ZERO
     },
     role: ROLE_FRAMER,
     framing: FRAMING_DATAGRAM,
@@ -110,6 +113,7 @@ const TAIL: TransportTail = TransportTail {
     // The stride this framer writes its pieces at: the contract's it was built against.
     frame_piece_size: FRAME_PIECE_SIZE,
     _reserved: 0,
+    ..TransportTail::ZERO
 };
 
 /// The door's Statement.
@@ -253,6 +257,7 @@ fn answer(
                     Lane::Clear => LANE_CLEAR,
                     Lane::Secured => LANE_SECURED,
                 },
+                ..DatagramRoute::ZERO
             });
         }
         d.routes_len = u32::try_from(routes.asked()).unwrap_or(u32::MAX);
@@ -280,6 +285,7 @@ fn answer(
             let mut span = |b: &[u8]| FrameSpan {
                 offset: frame.extend(b) as u64,
                 len: b.len() as u64,
+                ..FrameSpan::ZERO
             };
             d.terms = RendezvousTerms {
                 role: if t.initiates {
@@ -298,6 +304,7 @@ fn answer(
                 } else {
                     span(candidates.as_bytes())
                 },
+                ..RendezvousTerms::ZERO
             };
         } else if total > frame.cap() {
             return Err("the rendezvous terms do not fit the host's frame buffer".into());
@@ -344,6 +351,7 @@ fn answer(
             flags,
             retry_after_secs: 0,
             declared_len: 0,
+            ..FramePiece::ZERO
         });
         if !whole {
             p.bytes.drain(..n);

@@ -43,12 +43,14 @@ const fn abi(s: &[u8]) -> AbiStr {
     AbiStr {
         ptr: s.as_ptr(),
         len: s.len(),
+        ..AbiStr::ZERO
     }
 }
 
 const NONE: AbiStr = AbiStr {
     ptr: std::ptr::null(),
     len: 0,
+    ..AbiStr::ZERO
 };
 
 /// The host's buffers for one framer op.
@@ -71,6 +73,7 @@ impl Host {
             flags: 0,
             retry_after_secs: 0,
             declared_len: 0,
+            ..FramePiece::ZERO
         };
         Self {
             wire: vec![0; 16 * 1024],
@@ -162,6 +165,7 @@ fn begin(p: &Plugin<Transport>, side: u32, lane: bool) -> (String, u64) {
         peer_fingerprint: NONE,
         claim: NONE,
         local_certificate: abi(CERT),
+        ..ConnFacts::ZERO
     };
     let fields = [Field {
         name: abi(b"channel"),
