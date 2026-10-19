@@ -207,8 +207,8 @@ pub struct Framing {
     held: HashMap<u64, VecDeque<(bool, Vec<u8>)>>,
     /// Streams answered FULL and not yet writable again.
     full: HashSet<u64>,
-    /// Streams that failed alone.
-    failed_streams: HashSet<u64>,
+    /// SCTP stream ids (one per data channel) that failed alone.
+    failed_sids: HashSet<u64>,
     next_channel: u64,
     medias: HashMap<Mid, u64>,
     media_by_stream: HashMap<u64, Mid>,
@@ -396,7 +396,7 @@ impl Framing {
             channel_by_stream: HashMap::new(),
             held: HashMap::new(),
             full: HashSet::new(),
-            failed_streams: HashSet::new(),
+            failed_sids: HashSet::new(),
             next_channel: 1,
             medias: HashMap::new(),
             media_by_stream: HashMap::new(),
@@ -729,7 +729,7 @@ impl Framing {
         now: Instant,
     ) -> Result<(), Failed> {
         if let Some(mid) = self.media_by_stream.get(&stream).copied() {
-            if !(self.verified && self.keyed) || self.failed_streams.contains(&stream) {
+            if !(self.verified && self.keyed) || self.failed_sids.contains(&stream) {
                 return Ok(());
             }
             let clock = self.media_clock.entry(stream).or_insert(0);
@@ -759,7 +759,7 @@ impl Framing {
         let Some(id) = self.channel_by_stream.get(&stream).copied() else {
             return Err(format!("no stream {stream} on this association"));
         };
-        if self.failed_streams.contains(&stream) {
+        if self.failed_sids.contains(&stream) {
             // The host was told; what it still emits there is dropped.
             return Ok(());
         }
@@ -801,7 +801,7 @@ impl Framing {
     /// Stream `stream` fails, alone: its held messages are dropped and the layer above gets its
     /// failure piece, once. The association and every other stream carry on.
     pub fn fail_stream(&mut self, stream: u64, why: &str) {
-        if !self.failed_streams.insert(stream) {
+        if !self.failed_sids.insert(stream) {
             return;
         }
         self.held.remove(&stream);
@@ -826,7 +826,7 @@ impl Framing {
     /// Whether `stream` failed.
     #[must_use]
     pub fn stream_failed(&self, stream: u64) -> bool {
-        self.failed_streams.contains(&stream)
+        self.failed_sids.contains(&stream)
     }
 
     /// The clock reached `now`.
@@ -896,8 +896,8 @@ impl Framing {
         self.now = Some(now);
         // Messages held for channels that have since opened (or that had no room), in order.
         if !self.held.is_empty() {
-            let streams: Vec<u64> = self.held.keys().copied().collect();
-            for stream in streams {
+            let sids: Vec<u64> = self.held.keys().copied().collect();
+            for stream in sids {
                 self.flush_held(stream);
             }
         }
@@ -1068,7 +1068,7 @@ impl Framing {
                     return;
                 }
                 let s = self.channel_stream(d.id);
-                if self.failed_streams.contains(&s) {
+                if self.failed_sids.contains(&s) {
                     return;
                 }
                 // The reliable channel already acknowledged this message to the peer: dropping it
@@ -1092,7 +1092,7 @@ impl Framing {
             }
             Event::ChannelClose(id) => {
                 if let Some(s) = self.channels.get(&id).copied() {
-                    if self.failed_streams.contains(&s) {
+                    if self.failed_sids.contains(&s) {
                         // A failed stream already ended, failed.
                         return;
                     }
@@ -1124,7 +1124,7 @@ impl Framing {
                     .medias
                     .get(&d.mid)
                     .copied()
-                    .filter(|s| !self.failed_streams.contains(s))
+                    .filter(|s| !self.failed_sids.contains(s))
                 {
                     self.pieces.push_back(Piece {
                         stream: s,
