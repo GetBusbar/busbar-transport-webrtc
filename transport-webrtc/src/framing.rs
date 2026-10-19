@@ -63,6 +63,12 @@ pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 
 /// The most messages held for a channel not yet open, and the most pieces or routes queued.
 const MAX_HELD: usize = 256;
+
+/// How long ICE may stay "disconnected" before its path counts as failed and the association ends
+/// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
+/// checks pairs again). Browsers fail a connection after the same 30 seconds without a working
+/// pair.
+const ICE_FAILED_AFTER: Duration = Duration::from_secs(30);
 /// The most nominating checks awaiting their answer.
 const MAX_NOMINATING: usize = 64;
 /// The most candidates read from the far end's description: the rendezvous terms stay small enough
