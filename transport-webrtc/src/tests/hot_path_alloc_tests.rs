@@ -5,7 +5,7 @@
 //! per-packet work this crate's crypto provider does for the media stack, takes nothing from the
 //! allocator.
 //!
-//! THE WITNESS is this crate's one test allocator (`alloc_counter`): it counts the allocations made on the measuring thread
+//! THE WITNESS is this crate's one test allocator (busbar-contract's `alloc_counter`): it counts the allocations made on the measuring thread
 //! while a measurement is armed. THE RED ARM, kept: a `Vec` made under the same measurement is
 //! counted, so a zero below is the code, never a witness that cannot see.
 
@@ -14,7 +14,7 @@ use str0m::crypto::{
     SupportedAeadAes256Gcm,
 };
 
-use super::alloc_counter::allocations;
+use busbar_contract::alloc_counter::allocations_with;
 
 const IV: [u8; 12] = [3; 12];
 /// An RTP header (the AAD of an SRTP packet) and a payload.
@@ -28,7 +28,7 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
     let mut seal = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], true);
     let mut open = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], false);
     let mut sealed = [0_u8; PAYLOAD.len() + 16];
-    let (n, r) = allocations(|| {
+    let (n, r) = allocations_with(|| {
         AeadAes128GcmCipher::encrypt(&mut *seal, &IV, &HEADER, &PAYLOAD, &mut sealed)
     });
     r.expect("sealed");
@@ -36,7 +36,7 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
 
     // Opened into a buffer as long as the packet (the media stack's RTP scratch) ...
     let mut out = [0_u8; PAYLOAD.len() + 16];
-    let (n, r) = allocations(|| {
+    let (n, r) = allocations_with(|| {
         AeadAes128GcmCipher::decrypt(&mut *open, &IV, &[&HEADER], &sealed, &mut out)
     });
     assert_eq!(r.expect("opened"), PAYLOAD.len());
@@ -48,7 +48,7 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
     let mut seal2 = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], true);
     AeadAes128GcmCipher::encrypt(&mut *seal2, &IV, &HEADER, &PAYLOAD, &mut sealed).expect("sealed");
     let mut exact = [0_u8; PAYLOAD.len()];
-    let (n, r) = allocations(|| {
+    let (n, r) = allocations_with(|| {
         AeadAes128GcmCipher::decrypt(&mut *open, &IV, &[head, tail], &sealed, &mut exact)
     });
     assert_eq!(r.expect("opened"), PAYLOAD.len());
@@ -75,7 +75,7 @@ fn a_forged_packet_is_refused_and_leaves_no_plaintext() {
 
 #[test]
 fn red_arm_an_allocation_is_counted() {
-    let (n, v) = allocations(|| std::hint::black_box(vec![1_u8; 64]));
+    let (n, v) = allocations_with(|| std::hint::black_box(vec![1_u8; 64]));
     assert_eq!(v.len(), 64);
     assert!(n >= 1, "the witness must count an allocation");
 }

@@ -4,7 +4,7 @@
 //! KEYS ARE ZEROISED (THE DESIGN l.753): the keying material the framer holds is cleared before
 //! its memory goes back to the allocator, whether it was held to the end or refused.
 //!
-//! THE WITNESS is this crate's one test allocator (`alloc_counter`): every block freed is read first, and a block still
+//! THE WITNESS is this crate's one test allocator (busbar-contract's `alloc_counter`): every block freed is read first, and a block still
 //! holding a marked key (eight marker bytes, then the key's id 48 times) is counted against that
 //! id. Each test marks its own id, so tests running side by side never count each other's frees.
 //!
@@ -23,13 +23,14 @@ use crate::framing::{
 };
 use crate::shim::Shim;
 
-use super::alloc_counter::{freed_unzeroed, KEY_LEN, MARK};
+use busbar_contract::alloc_counter::{freed_unzeroed, marked_key};
+
+/// A key: the marker and 48 bytes of its id (the AEAD-AES-128-GCM material's 56 bytes).
+const KEY_LEN: usize = 56;
 
 /// The marked key `id`, on the stack (the stack is not the allocator's to watch).
 fn key(id: u8) -> [u8; KEY_LEN] {
-    let mut k = [id; KEY_LEN];
-    k[..MARK.len()].copy_from_slice(&MARK);
-    k
+    marked_key::<KEY_LEN>(id)
 }
 
 #[test]
