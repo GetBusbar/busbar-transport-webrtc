@@ -112,13 +112,74 @@ pub struct Route {
     pub lane: Lane,
 }
 
+/// A piece's bytes: owned, or a media frame the media stack handed up, kept shared (moved, never
+/// copied).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    /// Bytes the framing owns.
+    Owned(Vec<u8>),
+    /// `frame[at..end]` of a frame shared with the media stack.
+    Shared {
+        /// The frame.
+        frame: Arc<[u8]>,
+        /// The first byte not yet taken.
+        at: usize,
+        /// One past the last byte.
+        end: usize,
+    },
+}
+
+impl Payload {
+    /// A whole shared frame.
+    #[must_use]
+    pub fn shared(frame: Arc<[u8]>) -> Self {
+        let end = frame.len();
+        Payload::Shared { frame, at: 0, end }
+    }
+
+    /// Drop the first `n` bytes (the door wrote them).
+    pub fn consume(&mut self, n: usize) {
+        match self {
+            Payload::Owned(v) => {
+                v.drain(..n.min(v.len()));
+            }
+            Payload::Shared { at, end, .. } => *at = at.saturating_add(n).min(*end),
+        }
+    }
+
+    /// Keep the first `n` bytes.
+    pub fn truncate(&mut self, n: usize) {
+        match self {
+            Payload::Owned(v) => v.truncate(n),
+            Payload::Shared { at, end, .. } => *end = at.saturating_add(n).min(*end),
+        }
+    }
+}
+
+impl From<Vec<u8>> for Payload {
+    fn from(v: Vec<u8>) -> Self {
+        Payload::Owned(v)
+    }
+}
+
+impl std::ops::Deref for Payload {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Payload::Owned(v) => v,
+            Payload::Shared { frame, at, end } => &frame[*at..*end],
+        }
+    }
+}
+
 /// One piece for the layer above.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Piece {
     /// The stream.
     pub stream: u64,
     /// The bytes.
-    pub bytes: Vec<u8>,
+    pub bytes: Payload,
     /// A field block (a stream's head).
     pub fields: bool,
     /// The message was text.
@@ -130,6 +191,18 @@ pub struct Piece {
     pub failed: bool,
     /// The stream is WRITABLE again after it was full: an empty piece, alone.
     pub writable: bool,
+}
+
+impl Drop for Piece {
+    /// This end's own description carries its check secret (`a=ice-pwd`): its bytes are cleared
+    /// once the door has copied them out, or when the framing drops them unsent.
+    fn drop(&mut self) {
+        if self.stream == DESCRIPTION {
+            if let Payload::Owned(b) = &mut self.bytes {
+                b.zeroize();
+            }
+        }
+    }
 }
 
 /// A path request.
@@ -196,7 +269,6 @@ pub struct Framing {
     ice: IceConnectionState,
     /// Checks that nominate, by transaction id, and the path each travels.
     nominating: HashMap<[u8; 12], u32>,
-    nominated: u32,
     asked: Option<Request>,
     request: Option<Request>,
     terms: Option<Terms>,
@@ -313,11 +385,40 @@ fn initiates(description: &str) -> bool {
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("passive"))
 }
 
+/// Why a framing could not begin without randomness: the OS source the bytes are drawn from.
+pub const NO_RANDOMNESS: &str = "the OS randomness source (ring's SystemRandom) failed";
+
 /// A fresh check credential: `n` random bytes as lower-case hex (RFC 8445 §5.3: the user at least
-/// 24 bits, the secret at least 128).
-fn credential(n: usize) -> Result<String, Failed> {
-    let bytes: [u8; 32] = crate::crypto::random().ok_or("the host has no randomness")?;
-    Ok(bytes[..n].iter().map(|b| format!("{b:02x}")).collect())
+/// 24 bits, the secret at least 128), drawn from the OS through ring's `SystemRandom`. Written
+/// straight into a buffer of its final length, zeroed on drop: no temporary holds any of it.
+fn credential(n: usize) -> Result<Zeroizing<String>, Failed> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes: Zeroizing<[u8; 32]> = Zeroizing::new(crate::crypto::random().ok_or(NO_RANDOMNESS)?);
+    let mut out = Zeroizing::new(String::with_capacity(2 * n));
+    for b in &bytes[..n] {
+        out.push(char::from(HEX[usize::from(b >> 4)]));
+        out.push(char::from(HEX[usize::from(b & 0x0f)]));
+    }
+    Ok(out)
+}
+
+/// A session description rendered into a buffer of exactly its length, zeroed on drop: it states
+/// this end's check secret, and a buffer grown while rendering would free pieces of it unzeroed.
+fn rendered(description: &impl std::fmt::Display) -> Zeroizing<String> {
+    use std::fmt::Write as _;
+    /// Counts what a rendering writes, holding none of it.
+    struct Measure(usize);
+    impl std::fmt::Write for Measure {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0 += s.len();
+            Ok(())
+        }
+    }
+    let mut m = Measure(0);
+    let _ = write!(m, "{description}");
+    let mut out = Zeroizing::new(String::with_capacity(m.0));
+    let _ = write!(out, "{description}");
+    out
 }
 
 /// How many 48 kHz samples an Opus packet spans, from its table-of-contents byte (RFC 6716 §3.1).
@@ -356,9 +457,12 @@ impl Framing {
         opening: &Opening,
         now: Instant,
     ) -> Result<Self, Failed> {
+        let ufrag = credential(4)?;
+        let mut pass = credential(16)?;
         let local_creds = IceCreds {
-            ufrag: credential(4)?,
-            pass: credential(16)?,
+            ufrag: String::clone(&ufrag),
+            // Moved out, never copied: the emptied holder has nothing left to clear.
+            pass: std::mem::take(&mut *pass),
         };
         let config = Rtc::builder().set_crypto_provider(Arc::new(crate::crypto::provider()));
         let mut config = shim::present(config, certificate)
@@ -386,7 +490,6 @@ impl Framing {
             keyed: false,
             ice: IceConnectionState::New,
             nominating: HashMap::new(),
-            nominated: 0,
             asked: None,
             request: None,
             terms: None,
@@ -425,7 +528,7 @@ impl Framing {
             }
             let (offer, pending) = api.apply().ok_or("the offer could not be built")?;
             f.pending = Some(pending);
-            f.describe(offer.to_sdp_string());
+            f.describe(rendered(&offer));
             for (n, mid) in mids.into_iter().enumerate() {
                 let s = f.media(mid, n as u64);
                 f.head(s, &[("kind", "audio"), ("codec", "opus")]);
@@ -437,12 +540,13 @@ impl Framing {
         Ok(f)
     }
 
-    fn describe(&mut self, description: String) {
-        let description = self.with_candidate(description);
+    fn describe(&mut self, description: Zeroizing<String>) {
+        let mut description = self.with_candidate(description);
         self.described = true;
         self.pieces.push_back(Piece {
             stream: DESCRIPTION,
-            bytes: description.into_bytes(),
+            // Moved, never copied; the piece clears it when dropped.
+            bytes: std::mem::take(&mut *description).into_bytes().into(),
             fields: false,
             text: true,
             end: false,
@@ -451,8 +555,9 @@ impl Framing {
         });
     }
 
-    /// A description with this end's one host candidate, when the host has told it its port.
-    fn with_candidate(&self, description: String) -> String {
+    /// A description with this end's one host candidate, when the host has told it its port. Built
+    /// in a buffer of its final length, zeroed on drop, as the description it replaces is.
+    fn with_candidate(&self, description: Zeroizing<String>) -> Zeroizing<String> {
         let Some(local) = self.local else {
             return description;
         };
@@ -464,7 +569,13 @@ impl Framing {
             local.ip(),
             local.port()
         );
-        let mut out = String::with_capacity(description.len() + line.len() * 2);
+        let after = description
+            .split_inclusive('\n')
+            .filter(|l| l.starts_with("a=ice-pwd:"))
+            .count();
+        let mut out = Zeroizing::new(String::with_capacity(
+            description.len() + line.len() * after,
+        ));
         for l in description.split_inclusive('\n') {
             out.push_str(l);
             if l.starts_with("a=ice-pwd:") {
@@ -516,7 +627,7 @@ impl Framing {
                     .sdp_api()
                     .accept_offer(offer)
                     .map_err(|e| format!("the offer was refused: {e}"))?;
-                self.describe(answer.to_sdp_string());
+                self.describe(rendered(&answer));
             }
             Side::Dial => {
                 let pending = self.pending.take().ok_or("an answer with no offer out")?;
@@ -702,7 +813,6 @@ impl Framing {
     }
 
     fn nominate(&mut self, path: u32) {
-        self.nominated = path;
         let want = if self.bound == 0 {
             Request::Bind(path)
         } else if self.bound != path {
@@ -729,7 +839,11 @@ impl Framing {
         now: Instant,
     ) -> Result<(), Failed> {
         if let Some(mid) = self.media_by_stream.get(&stream).copied() {
-            if !(self.verified && self.keyed) || self.failed_sids.contains(&stream) {
+            // An empty media frame carries no samples: it is no frame.
+            if !(self.verified && self.keyed)
+                || self.failed_sids.contains(&stream)
+                || bytes.is_empty()
+            {
                 return Ok(());
             }
             let clock = self.media_clock.entry(stream).or_insert(0);
@@ -745,11 +859,14 @@ impl Framing {
             let Some(pt) = pt else {
                 return Err("the media line carries no Opus".into());
             };
+            // The media stack queues the frame as its own shared copy: that one allocation per
+            // frame is its API's (`Writer::write` takes the frame by value), and nothing is copied
+            // before it.
             if let Err(e) = writer.write(
                 pt,
                 now,
                 MediaTime::new(at, Frequency::FORTY_EIGHT_KHZ),
-                bytes.to_vec(),
+                bytes,
             ) {
                 self.fail_stream(stream, &format!("the media frame was refused: {e}"));
             }
@@ -808,7 +925,7 @@ impl Framing {
         self.full.remove(&stream);
         self.pieces.push_back(Piece {
             stream,
-            bytes: why.as_bytes().to_vec(),
+            bytes: why.as_bytes().to_vec().into(),
             fields: false,
             text: false,
             end: false,
@@ -882,7 +999,7 @@ impl Framing {
         }
         self.pieces.push_back(Piece {
             stream,
-            bytes: block,
+            bytes: block.into(),
             fields: true,
             text: false,
             end: false,
@@ -977,7 +1094,7 @@ impl Framing {
         if left <= LOW_WATER && self.full.remove(&stream) {
             self.pieces.push_back(Piece {
                 stream,
-                bytes: Vec::new(),
+                bytes: Vec::new().into(),
                 fields: false,
                 text: false,
                 end: false,
@@ -1082,7 +1199,7 @@ impl Framing {
                 }
                 self.pieces.push_back(Piece {
                     stream: s,
-                    bytes: d.data,
+                    bytes: d.data.into(),
                     fields: false,
                     text: !d.binary,
                     end: false,
@@ -1100,7 +1217,7 @@ impl Framing {
                     self.full.remove(&s);
                     self.pieces.push_back(Piece {
                         stream: s,
-                        bytes: Vec::new(),
+                        bytes: Vec::new().into(),
                         fields: false,
                         text: false,
                         end: true,
@@ -1128,7 +1245,8 @@ impl Framing {
                 {
                     self.pieces.push_back(Piece {
                         stream: s,
-                        bytes: d.data.to_vec(),
+                        // Moved: the frame the media stack handed up, never copied.
+                        bytes: Payload::shared(d.data),
                         fields: false,
                         text: false,
                         end: false,
@@ -1157,11 +1275,6 @@ impl Framing {
     /// The next piece.
     pub fn next_piece(&mut self) -> Option<Piece> {
         self.pieces.pop_front()
-    }
-
-    /// Put a piece back at the front.
-    pub fn unpiece(&mut self, p: Piece) {
-        self.pieces.push_front(p);
     }
 
     /// Whether anything is still owed.
@@ -1203,22 +1316,18 @@ impl Framing {
         self.ended
     }
 
-    /// The path the far end nominated last, as this framer's ICE agent accepted it.
+    /// This end's check secret (`a=ice-pwd`), for the zeroise witness to watch.
+    #[cfg(test)]
     #[must_use]
-    pub fn nominated(&self) -> u32 {
-        self.nominated
+    pub fn local_secret(&self) -> &str {
+        &self.local_creds.pass
     }
 
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
+    #[cfg(test)]
     #[must_use]
     pub fn holds_keying(&self) -> bool {
         self.relay.iter().any(|f| shim::is_keying(f))
-    }
-
-    /// How long until `deadline`, from `now`.
-    #[must_use]
-    pub fn until(deadline: Instant, now: Instant) -> Duration {
-        deadline.saturating_duration_since(now)
     }
 }
 
@@ -1230,4 +1339,4 @@ fn target(r: Request) -> u32 {
 
 #[cfg(test)]
 #[path = "tests/framing_tests.rs"]
-mod tests;
+pub(crate) mod tests;

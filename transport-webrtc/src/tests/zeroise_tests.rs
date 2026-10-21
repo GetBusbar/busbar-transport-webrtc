@@ -4,87 +4,40 @@
 //! KEYS ARE ZEROISED (THE DESIGN l.753): the keying material the framer holds is cleared before
 //! its memory goes back to the allocator, whether it was held to the end or refused.
 //!
-//! THE WITNESS is this binary's allocator: every block freed is read first, and a block still
-//! holding a marked key (eight marker bytes, then the key's id 48 times) is counted against that
-//! id. Each test marks its own id, so tests running side by side never count each other's frees.
+//! THE WITNESS is this crate's one test allocator (busbar-contract's `alloc_counter`): every block
+//! freed is read first, and a block still holding ANY 16 consecutive bytes of a watched secret
+//! (all of a shorter one) is counted against that secret's id. A test watches its marked keying
+//! material and every secret the media stack derives from it: each master key and salt split out
+//! of it, each SRTP session key and session salt (RFC 3711 §4.3, the derivation the media stack
+//! runs) and each session key's AES round keys (FIPS-197 §5.2, the schedule the AEAD cipher
+//! expands). Each test marks its own id, so tests running side by side never count each other's
+//! frees.
 //!
-//! THE RED ARM, kept: the same marked key in a plain `Vec`, dropped, IS seen, so a zero count
-//! below is the zeroising, never a witness that cannot see.
+//! THE RED ARMS, kept: the marked key, a master key split out of it and a salt alone, each in a
+//! plain `Vec`, dropped, ARE seen, so a zero count below is the zeroising, never a witness that
+//! cannot see.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use busbar_transport_webrtc::framing::{
+use crate::framing::{
     Failed, Framing, Lane, Opening, Piece, Request, Route, Side, Terms, DESCRIPTION,
     PROFILE_AEAD_AES_128_GCM,
 };
-use busbar_transport_webrtc::shim::Shim;
+use crate::shim::Shim;
 
-const MARK: [u8; 8] = *b"ZEROISE!";
+use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
+use busbar_contract::alloc_counter::{freed_unzeroed, last_seen, marked_key, watch};
+
 /// A key: the marker and 48 bytes of its id (the AEAD-AES-128-GCM material's 56 bytes).
 const KEY_LEN: usize = 56;
-const IDS: usize = 8;
-
-static FREED_UNZEROED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
-
-/// The system allocator, reading every block it frees for a marked key.
-struct Watch;
-
-/// The id of the marked key at the start of `w`, if one is there whole.
-fn marked(w: &[u8]) -> Option<usize> {
-    let (mark, rest) = w.split_at_checked(MARK.len())?;
-    let id = *rest.first()?;
-    (mark == MARK
-        && rest.len() >= KEY_LEN - MARK.len()
-        && rest[..KEY_LEN - MARK.len()].iter().all(|b| *b == id))
-    .then_some(usize::from(id))
-    .filter(|id| *id < IDS)
-}
-
-// SAFETY: every call is forwarded to `System` with its own arguments; `dealloc` only reads the
-// block it is handed before forwarding.
-unsafe impl GlobalAlloc for Watch {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller's contract, forwarded.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if layout.size() >= KEY_LEN {
-            // SAFETY: `ptr` is a live block of `layout.size()` bytes until `System` frees it below,
-            // and its owner has given it up: nothing else reads or writes it during `dealloc`. It
-            // is read as plain bytes and nothing read is kept.
-            let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
-            for at in 0..=block.len() - KEY_LEN {
-                if block[at] == MARK[0] {
-                    if let Some(id) = marked(&block[at..]) {
-                        FREED_UNZEROED[id].fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-            }
-        }
-        // SAFETY: the caller's contract, forwarded.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static WATCH: Watch = Watch;
 
 /// The marked key `id`, on the stack (the stack is not the allocator's to watch).
 fn key(id: u8) -> [u8; KEY_LEN] {
-    let mut k = [id; KEY_LEN];
-    k[..MARK.len()].copy_from_slice(&MARK);
-    k
-}
-
-fn freed_unzeroed(id: u8) -> usize {
-    FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
+    marked_key::<KEY_LEN>(id)
 }
 
 #[test]
@@ -137,6 +90,150 @@ fn red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed() {
     assert_eq!(freed_unzeroed(4), 0);
 }
 
+/// THE RED ARM FOR A SPLIT COPY: a master key split out of the material (16 of its bytes, no
+/// marker) and a salt alone (12 bytes, shorter than a window), each in a plain `Vec`, are seen.
+#[test]
+fn red_arm_a_split_master_key_and_a_salt_in_a_plain_vec_are_seen() {
+    let material = key(6);
+    let server_master: Vec<u8> = material[MASTER..2 * MASTER].to_vec();
+    drop(std::hint::black_box(server_master));
+    assert!(
+        freed_unzeroed(6) >= 1,
+        "the witness must see a split master key freed without zeroising"
+    );
+    let material = key(7);
+    watch(7, &material[2 * MASTER..2 * MASTER + SALT]);
+    let salt: Vec<u8> = material[2 * MASTER..2 * MASTER + SALT].to_vec();
+    drop(std::hint::black_box(salt));
+    assert!(
+        freed_unzeroed(7) >= 1,
+        "the witness must see a salt freed without zeroising"
+    );
+}
+
+// ── what the media stack derives from the material ───────────────────────────────────────────────
+
+/// The AEAD-AES-128-GCM material's layout (RFC 5764 §4.2): client key, server key, client salt,
+/// server salt.
+const MASTER: usize = 16;
+const SALT: usize = 12;
+
+/// The SRTP key-derivation labels (RFC 3711 §4.3.1).
+const LABEL_RTP_KEY: u8 = 0;
+const LABEL_RTP_SALT: u8 = 2;
+const LABEL_RTCP_KEY: u8 = 3;
+const LABEL_RTCP_SALT: u8 = 5;
+
+/// One AES-128 block of the SRTP key derivation: `AES_master(salt XOR label << 48 || 0)`, the
+/// first block of the counter-mode stream (a session key or salt is at most 16 bytes).
+fn derive(master: &[u8], salt: &[u8], label: u8) -> [u8; 16] {
+    let mut input = [0_u8; 16];
+    input[..SALT].copy_from_slice(salt);
+    input[7] ^= label;
+    let cipher = aes::Aes128::new(GenericArray::from_slice(master));
+    let mut block = GenericArray::clone_from_slice(&input);
+    cipher.encrypt_block(&mut block);
+    let mut out = [0_u8; 16];
+    out.copy_from_slice(&block);
+    out
+}
+
+/// GF(2^8) multiplication (FIPS-197 §4.2).
+fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+    let mut p = 0;
+    while b != 0 {
+        if b & 1 != 0 {
+            p ^= a;
+        }
+        let carry = a & 0x80 != 0;
+        a <<= 1;
+        if carry {
+            a ^= 0x1b;
+        }
+        b >>= 1;
+    }
+    p
+}
+
+/// The AES S-box (FIPS-197 §5.1.1): the multiplicative inverse, then the affine transform.
+fn sbox(x: u8) -> u8 {
+    // x^254 is x's inverse (0 maps to 0).
+    let mut inv = 1_u8;
+    for _ in 0..254 {
+        inv = gf_mul(inv, x);
+    }
+    inv ^ inv.rotate_left(1) ^ inv.rotate_left(2) ^ inv.rotate_left(3) ^ inv.rotate_left(4) ^ 0x63
+}
+
+/// The eleven AES-128 round keys of `key` (FIPS-197 §5.2), round 0 being the key itself.
+fn round_keys(key: &[u8; 16]) -> [[u8; 16]; 11] {
+    let mut w = [[0_u8; 4]; 44];
+    for (i, word) in w.iter_mut().take(4).enumerate() {
+        word.copy_from_slice(&key[4 * i..4 * i + 4]);
+    }
+    let mut rcon = 1_u8;
+    for i in 4..44 {
+        let mut t = w[i - 1];
+        if i % 4 == 0 {
+            t = [sbox(t[1]) ^ rcon, sbox(t[2]), sbox(t[3]), sbox(t[0])];
+            rcon = gf_mul(rcon, 2);
+        }
+        w[i] = std::array::from_fn(|j| w[i - 4][j] ^ t[j]);
+    }
+    let mut out = [[0_u8; 16]; 11];
+    for (r, rk) in out.iter_mut().enumerate() {
+        for c in 0..4 {
+            rk[4 * c..4 * c + 4].copy_from_slice(&w[4 * r + c]);
+        }
+    }
+    out
+}
+
+/// The key expansion is FIPS-197's: Appendix A.1's key gives its round keys 1 and 10.
+#[test]
+fn the_witness_key_schedule_is_fips_197() {
+    let key: [u8; 16] = [
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
+    ];
+    let rk = round_keys(&key);
+    assert_eq!(rk[0], key);
+    assert_eq!(
+        rk[1],
+        [
+            0xa0, 0xfa, 0xfe, 0x17, 0x88, 0x54, 0x2c, 0xb1, 0x23, 0xa3, 0x39, 0x39, 0x2a, 0x6c,
+            0x76, 0x05
+        ]
+    );
+    assert_eq!(
+        rk[10],
+        [
+            0xd0, 0x14, 0xf9, 0xa8, 0xc9, 0xee, 0x25, 0x89, 0xe1, 0x3f, 0x0c, 0xc8, 0xb6, 0x63,
+            0x0c, 0xa6
+        ]
+    );
+}
+
+/// Watch, under `id`, every secret the media stack derives from `material`: both salts split out
+/// of it, and per direction the RTP and RTCP session salts and every round key of the RTP and
+/// RTCP session keys. The material itself (so each master key, any window of it) is watched by
+/// [`marked_key`].
+fn watch_derived(id: u8, material: &[u8; KEY_LEN]) {
+    for half in 0..2 {
+        let master = &material[half * MASTER..(half + 1) * MASTER];
+        let salt = &material[2 * MASTER + half * SALT..2 * MASTER + (half + 1) * SALT];
+        watch(id, salt);
+        for label in [LABEL_RTP_SALT, LABEL_RTCP_SALT] {
+            watch(id, &derive(master, salt, label)[..SALT]);
+        }
+        for label in [LABEL_RTP_KEY, LABEL_RTCP_KEY] {
+            for rk in round_keys(&derive(master, salt, label)) {
+                watch(id, &rk);
+            }
+        }
+    }
+}
+
 // ── the accepted path ────────────────────────────────────────────────────────────────────────────
 
 /// A placeholder certificate: the framer states its SHA-256 and nothing else reads it.
@@ -183,15 +280,15 @@ impl End {
         p
     }
 
-    /// The description this end yielded on stream 0.
-    fn description(&mut self) -> Vec<u8> {
+    /// The description this end yielded on stream 0, held zeroising (it states the check secret).
+    fn description(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
         self.collect();
         let at = self
             .pieces
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        self.pieces.remove(at).bytes
+        zeroize::Zeroizing::new(self.pieces.remove(at).bytes.to_vec())
     }
 
     fn collect(&mut self) {
@@ -284,11 +381,16 @@ fn opening() -> Opening {
 }
 
 /// Two ends through the rendezvous, ICE, verification and keying with `material`: a connected
-/// association (the framer's own unit tests' simulated host, `src/tests/framing_tests.rs`).
-fn connected_with(material: &[u8]) -> (End, End, Instant) {
+/// association (the framer's own unit tests' simulated host, `src/tests/framing_tests.rs`), with
+/// both ends' check secrets watched under `id`.
+fn connected_with(material: &[u8], id: u8) -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
     let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    // Each end's check secret (ICE password) is the other's remote one: watched from here on,
+    // through both descriptions, the media stack's session descriptions and its ICE agents.
+    watch(id, dial.f.local_secret().as_bytes());
+    watch(id, accept.f.local_secret().as_bytes());
     let offer = dial.description();
     accept
         .f
@@ -314,19 +416,27 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 }
 
 /// KEYS ARE ZEROISED ON THE ACCEPTED PATH (THE DESIGN §5, "Datagram media": "keys are zeroised";
+/// the check secrets, local and remote, are watched beside the keying material: the same class);
 /// busbar Q128 transport-webrtc H2): keying material presented to a verified association is handed
 /// to the media stack, which derives its SRTP contexts from it; when both ends are dropped no freed
-/// block holds the key. RED on the unpatched media stack: str0m 0.24.1 copied the material into a
-/// plain `Vec`, and dimpl 0.7.4's `KeyingMaterial` freed its bytes unzeroed.
+/// block holds the material, any part of it, or any key, salt or round key derived from it. RED on
+/// the unpatched media stack (str0m 0.24.1 copied the material into a plain `Vec`, dimpl 0.7.4's
+/// `KeyingMaterial` freed its bytes unzeroed) and on ring 0.17.14, whose AES-GCM key freed its
+/// expanded schedule, round 0 being the session key itself, unzeroed.
 #[test]
 fn keying_material_on_the_accepted_path_is_never_freed_unzeroed() {
     let material = key(5);
-    let (dial, accept, _) = connected_with(&material);
+    watch_derived(5, &material);
+    let (dial, accept, _) = connected_with(&material, 5);
     assert!(dial.keyed && accept.keyed, "both ends took the material");
     drop((dial, accept));
+    // `nth` names the secret (watch order): 0 the material; per half (+25 for the second) 1 the
+    // master salt, 2 and 3 the RTP and RTCP session salts, 4..=14 and 15..=25 the RTP and RTCP
+    // session keys' round keys; 51 the dialling end's check secret, 52 the accepting end's.
     assert_eq!(
         freed_unzeroed(5),
         0,
-        "a copy of the keying material was freed unzeroed"
+        "a copy of the keying material was freed unzeroed, last: {:?}",
+        last_seen(5)
     );
 }

@@ -13,7 +13,7 @@
 //!
 //! ## One entry: the door
 //!
-//! [`door::door`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
+//! [`door`] is the memory-ABI door, the same table compiled in and dropped
 //! in (the sibling `busbar-transport-webrtc-plugin` cdylib exports it as its image's one symbol,
 //! `export_door!`). This crate exports nothing, so linking it adds no door symbol and it holds no
 //! `unsafe` at all.
@@ -21,17 +21,25 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-pub mod crypto;
-pub mod door;
-pub mod framing;
-pub mod shim;
-pub mod stun;
+mod crypto;
+mod door;
+mod framing;
+mod shim;
+mod stun;
 
-/// THE TRANSPORT AXIS ENTRY: the row's key, the layers it declares and its door.
-pub mod linked {
-    pub use crate::door::{door, KEY, MACRO_DOOR};
-    /// The layers this wire declares it can be built over: none (the datagram port is the host's).
-    pub const COMPOSES_OVER: &[&str] = &[];
-    /// Whether this wire carries sessions: yes, an association is one (its claim row's `session`).
-    pub const SESSION: bool = true;
-}
+/// THE DOOR: this plugin's one public item (BUSBAR-1.6.0.md l.3567, Crate shape).
+pub use door::door;
+
+/// The unit tests' one allocator (`tests/test_allocator.rs`): busbar-contract's test-only
+/// `alloc-counter`. This crate holds no `unsafe`.
+#[cfg(test)]
+#[path = "tests/test_allocator.rs"]
+mod test_allocator;
+
+#[cfg(test)]
+#[path = "tests/hot_path_alloc_tests.rs"]
+mod hot_path_alloc_tests;
+
+#[cfg(test)]
+#[path = "tests/zeroise_tests.rs"]
+mod zeroise_tests;

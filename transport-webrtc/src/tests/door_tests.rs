@@ -6,7 +6,7 @@ use busbar_contract::abi::transport::PIECE_STREAM_FAILED;
 fn piece(bytes: &[u8], fields: bool, text: bool, end: bool) -> Piece {
     Piece {
         stream: 1,
-        bytes: bytes.to_vec(),
+        bytes: bytes.to_vec().into(),
         fields,
         text,
         end,

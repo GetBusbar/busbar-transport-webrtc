@@ -67,7 +67,7 @@ impl End {
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        self.pieces.remove(at).bytes
+        self.pieces.remove(at).bytes.to_vec()
     }
 
     fn collect(&mut self) {
@@ -193,7 +193,7 @@ fn heard(e: &End, stream: u64) -> Vec<Vec<u8>> {
     e.pieces
         .iter()
         .filter(|p| p.stream == stream && !p.fields && !p.bytes.is_empty())
-        .map(|p| p.bytes.clone())
+        .map(|p| p.bytes.to_vec())
         .collect()
 }
 
@@ -204,7 +204,7 @@ fn an_offer_and_an_answer_settle_terms_and_a_session_carries_messages_and_media_
         e.pieces
             .iter()
             .find(|p| p.fields && p.bytes.starts_with(b"label: "))
-            .map(|p| (p.stream, p.bytes.clone()))
+            .map(|p| (p.stream, p.bytes.to_vec()))
     };
     let (accept_stream, label) = head(&accept).expect("the accepting end opened the channel");
     assert_eq!(label, b"label: events\r\n");
@@ -450,7 +450,7 @@ fn a_held_message_is_never_overtaken() {
         .pieces
         .iter()
         .find(|p| p.fields && p.bytes.starts_with(b"label: "))
-        .map(|p| (p.stream, p.bytes.clone()))
+        .map(|p| (p.stream, p.bytes.to_vec()))
         .expect("the accepting end opened the channel");
     // The first two fill most of the stack's send buffer, the third does not fit beside them and
     // is held, the fourth would fit.
@@ -560,7 +560,7 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     while dial.f.pieces.len() < MAX_HELD * 4 {
         dial.f.pieces.push_back(Piece {
             stream: 99,
-            bytes: vec![0],
+            bytes: vec![0].into(),
             fields: false,
             text: false,
             end: false,
@@ -581,5 +581,32 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     assert!(
         dial.f.pieces.iter().any(|p| p.stream == stream && p.failed),
         "with its failure piece"
+    );
+}
+
+/// THE CHECK SECRET NEVER REACHES A LOG (THE DESIGN §5, "keys are zeroised"; the same class of
+/// secret): the media stack logs its ICE credentials with `{:?}` (debug and trace), and a busbar
+/// that links this framer has its log subscriber installed, so their Debug form must not state the
+/// password. RED before the fix: str0m's IceCreds derived Debug and printed it in clear.
+#[test]
+fn the_ice_credentials_debug_form_never_states_the_password() {
+    let f = Framing::begin(
+        Side::Accept,
+        CERT,
+        Some("203.0.113.9:3478".parse().expect("an address")),
+        &Opening::default(),
+        Instant::now(),
+    )
+    .expect("begins");
+    let pass = f.local_creds.pass.clone();
+    assert_eq!(pass.len(), 32, "a 128-bit secret, hex");
+    let shown = format!("{:?}", f.local_creds);
+    assert!(
+        !shown.contains(&pass),
+        "the password is in the Debug form: {shown}"
+    );
+    assert!(
+        shown.contains(&f.local_creds.ufrag),
+        "the user name is shown: {shown}"
     );
 }

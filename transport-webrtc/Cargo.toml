@@ -9,7 +9,7 @@ description = "The webrtc framer: ICE, SRTP and SCTP over the host's datagram po
 license = "Apache-2.0"
 
 [lib]
-# rlib: the LINKED door (`linked::door`), which a busbar build names as a compiled-in row. The
+# rlib: the LINKED door (`door`), which a busbar build names as a compiled-in row. The
 # dropped-in door is the sibling `busbar-transport-webrtc-plugin` cdylib, which exports this same door
 # as its one symbol; this crate exports none.
 crate-type = ["rlib"]
@@ -32,3 +32,8 @@ str0m = { version = "=0.24.1", default-features = false }
 ring = { workspace = true }
 aes = { version = "0.8", default-features = false, features = ["zeroize"] }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+# The unit tests' one allocator (ARCHITECT ruling 2026-10-21): busbar-contract's test-only counting
+# allocator and freed-key witness, so the crate root keeps the literal `#![forbid(unsafe_code)]`.
+busbar-contract = { workspace = true, features = ["alloc-counter"] }

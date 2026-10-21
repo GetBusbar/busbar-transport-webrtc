@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **ONE FRAMER, BOTH DOORS, ONE TABLE** — the `webrtc` framer compiled in (`linked::door`, the
+//! **ONE FRAMER, BOTH DOORS, ONE TABLE** — the `webrtc` framer compiled in (`door`, the
 //! `linked` row) and dropped in (this crate's `cdylib`, exporting the same door as `busbar_plugin_door`),
 //! each admitted by the ONE loader against the same Statement rendering and bound to a dispatcher
 //! of its own (Part 2 #2: a plugin is a plugin; THE DESIGN §11.4: compiled in or dropped in, the
@@ -26,7 +26,9 @@ use busbar_contract::abi::transport::{
 };
 use busbar_plugin_loader::conformance::{self as conf, Leg, Subject};
 use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
-use busbar_plugin_loader::dispatch::{load_dropped, Frame, InFrame, LinkedRow, OutFrame, Plugin};
+use busbar_plugin_loader::dispatch::{
+    load_dropped, Frame, InFrame, LinkedRow, LoadedDoor, OutFrame, Plugin,
+};
 
 /// The crate whose cdylib is the dropped-in door.
 const CDYLIB: &str = "busbar_transport_webrtc_plugin";
@@ -35,21 +37,24 @@ const LOCAL: &str = "198.51.100.1:40000";
 /// The host's public certificate (the framer states its SHA-256; nothing else reads it).
 const CERT: &[u8] = b"the host's public certificate, DER";
 
+/// This plugin's own door, named for the loader.
+fn loaded_door() -> LoadedDoor {
+    // SAFETY: `busbar_transport_webrtc::door` is this crate's own door: it answers the `'static`
+    // door of this plugin.
+    #[allow(unused_unsafe)]
+    let loaded = unsafe { LoadedDoor::from_raw(busbar_transport_webrtc::door) };
+    loaded
+}
+
 fn subject() -> Subject {
-    Subject::new(busbar_transport_webrtc::linked::door, CDYLIB, "{}")
+    Subject::of_loaded(loaded_door(), CDYLIB, "{}")
 }
 
-const fn abi(s: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+const fn abi(s: &'static [u8]) -> AbiStr {
+    AbiStr::of_bytes(s)
 }
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ABSENT;
 
 /// The host's buffers for one framer op.
 struct Host {
@@ -288,7 +293,7 @@ fn expected() -> Vec<String> {
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let s = subject();
-    let linked_row = LinkedRow::of(s.door).expect("the linked door is admitted");
+    let linked_row = LinkedRow::of_loaded(loaded_door()).expect("the linked door is admitted");
     assert_eq!(
         linked_row.statement,
         s.stated(),
@@ -320,4 +325,14 @@ fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {
     );
     assert!(load_dropped::<Transport>(&s.cdylib(), &own, s.bind(&d, "webrtc-own")).is_ok());
     assert!(conf::load::<Transport>(&s, Leg::Linked, s.bind(&d, "webrtc-linked")).is_ok());
+}
+
+#[test]
+fn the_statement_carries_the_declares_document() {
+    let row = LinkedRow::of_loaded(loaded_door()).unwrap();
+    let read = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
+    assert_eq!(
+        busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes),
+        Some(&include_bytes!("../../transport-webrtc/declares.json")[..]),
+    );
 }
