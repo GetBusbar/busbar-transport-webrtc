@@ -196,7 +196,6 @@ pub struct Framing {
     ice: IceConnectionState,
     /// Checks that nominate, by transaction id, and the path each travels.
     nominating: HashMap<[u8; 12], u32>,
-    nominated: u32,
     asked: Option<Request>,
     request: Option<Request>,
     terms: Option<Terms>,
@@ -386,7 +385,6 @@ impl Framing {
             keyed: false,
             ice: IceConnectionState::New,
             nominating: HashMap::new(),
-            nominated: 0,
             asked: None,
             request: None,
             terms: None,
@@ -702,7 +700,6 @@ impl Framing {
     }
 
     fn nominate(&mut self, path: u32) {
-        self.nominated = path;
         let want = if self.bound == 0 {
             Request::Bind(path)
         } else if self.bound != path {
@@ -1159,11 +1156,6 @@ impl Framing {
         self.pieces.pop_front()
     }
 
-    /// Put a piece back at the front.
-    pub fn unpiece(&mut self, p: Piece) {
-        self.pieces.push_front(p);
-    }
-
     /// Whether anything is still owed.
     #[must_use]
     pub fn owes(&self) -> bool {
@@ -1203,22 +1195,11 @@ impl Framing {
         self.ended
     }
 
-    /// The path the far end nominated last, as this framer's ICE agent accepted it.
-    #[must_use]
-    pub fn nominated(&self) -> u32 {
-        self.nominated
-    }
-
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
+    #[cfg(test)]
     #[must_use]
     pub fn holds_keying(&self) -> bool {
         self.relay.iter().any(|f| shim::is_keying(f))
-    }
-
-    /// How long until `deadline`, from `now`.
-    #[must_use]
-    pub fn until(deadline: Instant, now: Instant) -> Duration {
-        deadline.saturating_duration_since(now)
     }
 }
 

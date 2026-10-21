@@ -9,7 +9,7 @@
 //!   stream 0). The host's certificate comes in [`ConnFacts::local_certificate`] (public DER; its
 //!   fingerprint is what the description states), the host port's address in the lane. A dialling
 //!   framing's opening fields name what it offers: one `channel` field per data channel (its label,
-//!   streams `1, 2, ...` in order) and `media: audio` for one Opus line (stream [`MEDIA_BASE`]).
+//!   streams `1, 2, ...` in order) and `media: audio` for one Opus line (stream [`crate::framing::MEDIA_BASE`]).
 //! * `ingest`: one datagram, or the far end's description, as the lane names it; the lane's host
 //!   state (bound path, verified bit, keying-material item, new paths) is read first, on every call
 //!   that carries a lane.
@@ -50,7 +50,7 @@ use busbar_contract::abi::transport::{
     UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
-use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
+use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE};
 
 // ── the statement ────────────────────────────────────────────────────────────────────────────────
 
@@ -808,9 +808,6 @@ fn piece_flags(p: &Piece, continued: bool, whole: bool, n: usize) -> u16 {
     }
     flags
 }
-
-/// The first media stream, for a host that names streams.
-pub const FIRST_MEDIA_STREAM: u64 = MEDIA_BASE;
 
 #[cfg(test)]
 #[path = "tests/door_tests.rs"]

@@ -147,6 +147,7 @@ pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>,
 }
 
 /// Whether `frame` is a keying datagram not yet handed to the shim.
+#[cfg(test)]
 #[must_use]
 pub fn is_keying(frame: &[u8]) -> bool {
     frame.first() == Some(&KEYING)
@@ -235,12 +236,6 @@ impl Shim {
         }
     }
 
-    /// Whether the host reported the far end verified.
-    #[must_use]
-    pub fn is_connected(&self) -> bool {
-        self.lock().connected
-    }
-
     /// Plaintext the host's secure layer opened (dropped before "connected").
     pub fn opened(&self, plaintext: &[u8]) {
         let mut r = self.lock();
@@ -252,13 +247,8 @@ impl Shim {
         r.opened.push_back(b);
     }
 
-    /// The role the media stack settled: `Some(true)` = this end opens the handshake.
-    #[must_use]
-    pub fn active(&self) -> Option<bool> {
-        self.lock().active
-    }
-
     /// Whether material is still held (not yet handed to the media stack).
+    #[cfg(test)]
     #[must_use]
     pub fn holds_keying(&self) -> bool {
         self.lock().keying.is_some()
