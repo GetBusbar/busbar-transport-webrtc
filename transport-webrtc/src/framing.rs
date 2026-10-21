@@ -1316,6 +1316,13 @@ impl Framing {
         self.ended
     }
 
+    /// This end's check secret (`a=ice-pwd`), for the zeroise witness to watch.
+    #[cfg(test)]
+    #[must_use]
+    pub fn local_secret(&self) -> &str {
+        &self.local_creds.pass
+    }
+
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
     #[cfg(test)]
     #[must_use]

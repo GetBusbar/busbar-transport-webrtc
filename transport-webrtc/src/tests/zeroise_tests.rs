@@ -280,15 +280,15 @@ impl End {
         p
     }
 
-    /// The description this end yielded on stream 0.
-    fn description(&mut self) -> Vec<u8> {
+    /// The description this end yielded on stream 0, held zeroising (it states the check secret).
+    fn description(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
         self.collect();
         let at = self
             .pieces
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        self.pieces.remove(at).bytes.to_vec()
+        zeroize::Zeroizing::new(self.pieces.remove(at).bytes.to_vec())
     }
 
     fn collect(&mut self) {
@@ -381,11 +381,16 @@ fn opening() -> Opening {
 }
 
 /// Two ends through the rendezvous, ICE, verification and keying with `material`: a connected
-/// association (the framer's own unit tests' simulated host, `src/tests/framing_tests.rs`).
-fn connected_with(material: &[u8]) -> (End, End, Instant) {
+/// association (the framer's own unit tests' simulated host, `src/tests/framing_tests.rs`), with
+/// both ends' check secrets watched under `id`.
+fn connected_with(material: &[u8], id: u8) -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
     let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    // Each end's check secret (ICE password) is the other's remote one: watched from here on,
+    // through both descriptions, the media stack's session descriptions and its ICE agents.
+    watch(id, dial.f.local_secret().as_bytes());
+    watch(id, accept.f.local_secret().as_bytes());
     let offer = dial.description();
     accept
         .f
@@ -411,6 +416,7 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 }
 
 /// KEYS ARE ZEROISED ON THE ACCEPTED PATH (THE DESIGN §5, "Datagram media": "keys are zeroised";
+/// the check secrets, local and remote, are watched beside the keying material: the same class);
 /// busbar Q128 transport-webrtc H2): keying material presented to a verified association is handed
 /// to the media stack, which derives its SRTP contexts from it; when both ends are dropped no freed
 /// block holds the material, any part of it, or any key, salt or round key derived from it. RED on
@@ -421,12 +427,12 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 fn keying_material_on_the_accepted_path_is_never_freed_unzeroed() {
     let material = key(5);
     watch_derived(5, &material);
-    let (dial, accept, _) = connected_with(&material);
+    let (dial, accept, _) = connected_with(&material, 5);
     assert!(dial.keyed && accept.keyed, "both ends took the material");
     drop((dial, accept));
     // `nth` names the secret (watch order): 0 the material; per half (+25 for the second) 1 the
     // master salt, 2 and 3 the RTP and RTCP session salts, 4..=14 and 15..=25 the RTP and RTCP
-    // session keys' round keys.
+    // session keys' round keys; 51 the dialling end's check secret, 52 the accepting end's.
     assert_eq!(
         freed_unzeroed(5),
         0,
