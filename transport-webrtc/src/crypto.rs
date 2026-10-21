@@ -110,7 +110,11 @@ impl Aes128CmSha1_80Cipher for AesCmRefused {
     }
 }
 
-/// An AEAD-AES-GCM cipher on ring: one key, sealing or opening in place.
+/// An AEAD-AES-GCM cipher on ring: one key, sealing or opening in place. The key lives in ring's
+/// AES-GCM key (the expanded AES schedule, round 0 being the session key itself, and the GHASH key
+/// derived from it), which the pinned ring (GetBusbar/ring, `[patch.crates-io]`) zeroes when this
+/// cipher drops: "keys are zeroised" (THE DESIGN §5) holds for every SRTP session key the media
+/// stack derives.
 pub struct Gcm {
     key: LessSafeKey,
 }
@@ -345,7 +349,8 @@ impl Sha256Provider for Ring {
     }
 }
 
-/// Random bytes from the OS, through ring.
+/// Random bytes from the OS through ring's `SystemRandom`: a stateless OS call, so the framer
+/// keeps no generator state (THE DESIGN §2). A failure is [`crate::framing::NO_RANDOMNESS`].
 #[must_use]
 pub fn random<const N: usize>() -> Option<[u8; N]> {
     use ring::rand::SecureRandom as _;

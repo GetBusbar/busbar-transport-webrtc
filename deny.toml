@@ -1,5 +1,5 @@
 # RENDERED by `busbar-release plugin heal` from GetBusbar/busbar-release template/ and busbar's
-# `.github/fleet/deps.toml` at 885ae3cd8c54a44e5636bfb951a1f2e285f9a53b; a hand edit is overwritten by the next sync. CI runs
+# `.github/fleet/deps.toml` at 4843f145e4cf61a51ac2c94ae17465866afa2043; a hand edit is overwritten by the next sync. CI runs
 # `cargo deny check` on it (busbar's plugin-ci.yml at the pin). The license allowlist is busbar's own;
 # the one reviewed git source is busbar itself, at the pin.
 [graph]
@@ -240,4 +240,4 @@ skip = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/GetBusbar/busbar", "https://github.com/GetBusbar/dimpl", "https://github.com/GetBusbar/str0m"]
+allow-git = ["https://github.com/GetBusbar/busbar", "https://github.com/GetBusbar/dimpl", "https://github.com/GetBusbar/str0m", "https://github.com/GetBusbar/ring", "https://github.com/GetBusbar/sctp-proto"]

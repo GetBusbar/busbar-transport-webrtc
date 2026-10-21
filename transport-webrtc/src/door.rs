@@ -136,7 +136,8 @@ struct Held1 {
     f: Framing,
     base_ns: u64,
     base: Instant,
-    /// A message being gathered, per stream, and whether it is text.
+    /// A message being gathered, per stream, and whether it is text. Each stream's buffer is kept
+    /// across its messages (cleared, never freed), so a message costs no allocation here.
     gathering: HashMap<u64, (Vec<u8>, bool)>,
     /// A piece split across calls: the bytes not yet written, and whether they continue a field
     /// line an earlier piece began.
@@ -355,7 +356,7 @@ fn answer(
             declared_len: 0,
         });
         if !whole {
-            p.bytes.drain(..n);
+            p.bytes.consume(n);
             // The rest of a field block continues the line this piece may have split.
             let continues = p.fields;
             h.partial = Some((p, continues));
@@ -651,8 +652,9 @@ impl SafeSlot for Emit {
     }
 }
 
-/// One `emit` call's piece of a message for `stream`: gathered, and sent at `end`. The yield flags
-/// it answers besides ([`YIELD_STREAM_FULL`] while the stream is full).
+/// One `emit` call's piece of a message for `stream`: gathered, and sent at `end`, an empty message
+/// as any other (the far end's channel yields it as an empty frame). The yield flags it answers
+/// besides ([`YIELD_STREAM_FULL`] while the stream is full).
 fn emit_on(
     h: &mut Held1,
     stream: u64,
@@ -661,35 +663,36 @@ fn emit_on(
     text: bool,
     now: Instant,
 ) -> Result<u32, String> {
-    let full = |h: &Held1| {
-        if h.f.stream_full(stream) {
+    let full = |f: &Framing| {
+        if f.stream_full(stream) {
             YIELD_STREAM_FULL
         } else {
             0
         }
     };
-    if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
-        return Ok(full(h));
+    let Held1 { f, gathering, .. } = h;
+    if (bytes.is_empty() && !end) || f.stream_failed(stream) {
+        return Ok(full(f));
     }
-    let g = h.gathering.entry(stream).or_default();
+    let g = gathering.entry(stream).or_default();
     if g.0.len() + bytes.len() > MAX_MESSAGE {
         // A message no channel could carry: its stream fails, alone, and nothing more of it is
         // gathered.
-        h.gathering.remove(&stream);
-        h.f.fail_stream(stream, "a message larger than the channel can ever send");
+        gathering.remove(&stream);
+        f.fail_stream(stream, "a message larger than the channel can ever send");
         return Ok(0);
     }
     g.0.extend_from_slice(bytes);
     g.1 |= text;
     if !end {
-        return Ok(full(h));
+        return Ok(full(f));
     }
-    let (message, text) = h.gathering.remove(&stream).unwrap_or_default();
-    if message.is_empty() {
-        return Ok(full(h));
-    }
-    h.f.emit(stream, &message, text, now)?;
-    Ok(full(h))
+    let text = std::mem::take(&mut g.1);
+    let sent = f.emit(stream, &g.0, text, now);
+    // The buffer stays the stream's for its next message.
+    g.0.clear();
+    sent?;
+    Ok(full(f))
 }
 
 /// `timer`: the deadline the framing asked for passed.

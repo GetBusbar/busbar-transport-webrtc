@@ -288,7 +288,7 @@ impl End {
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        self.pieces.remove(at).bytes
+        self.pieces.remove(at).bytes.to_vec()
     }
 
     fn collect(&mut self) {
