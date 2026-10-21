@@ -56,38 +56,3 @@ fn messages_and_field_blocks_keep_their_bits() {
         PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME
     );
 }
-
-/// AN EMPTY OUTBOUND MESSAGE IS DELIVERED, as an empty inbound one is (WebRTC data channels carry
-/// empty messages, RFC 8831 §6.6): the layer above emits a message with no bytes and the far end's
-/// channel yields it as an empty frame, never nothing. RED before the fix: the door dropped it
-/// silently, and the media stack sent no chunk for a message of no bytes.
-#[test]
-fn an_empty_outbound_channel_message_reaches_the_far_end() {
-    use crate::framing::tests::{connected, run};
-
-    let (mut dial, mut accept, mut now) = connected();
-    let far = accept
-        .pieces
-        .iter()
-        .find(|p| p.fields && p.bytes.starts_with(b"label: "))
-        .map(|p| p.stream)
-        .expect("the accepting end opened the channel");
-    let stand_in = Framing::begin(Side::Accept, b"cert", None, &Opening::default(), now)
-        .expect("a stand-in framing");
-    let mut h = Held1 {
-        f: std::mem::replace(&mut dial.f, stand_in),
-        base_ns: 1,
-        base: now,
-        gathering: HashMap::new(),
-        partial: None,
-    };
-    emit_on(&mut h, 1, b"", true, false, now).expect("the empty message is emitted");
-    dial.f = h.f;
-    run(&mut dial, &mut accept, &mut now, 500);
-    assert!(
-        accept.pieces.iter().any(|p| p.stream == far
-            && p.bytes.is_empty()
-            && !(p.fields || p.end || p.failed || p.writable)),
-        "the far end heard the empty message"
-    );
-}

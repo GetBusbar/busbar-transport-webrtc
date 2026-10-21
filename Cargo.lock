@@ -61,7 +61,7 @@ dependencies = [
 [[package]]
 name = "busbar-contract"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=4da1c414f347a3091824de6e48bc972e13f64202#4da1c414f347a3091824de6e48bc972e13f64202"
+source = "git+https://github.com/GetBusbar/busbar?rev=b1a4ad0df48e7f3b24757db688a66e165255a536#b1a4ad0df48e7f3b24757db688a66e165255a536"
 dependencies = [
  "async-trait",
  "base64",
@@ -84,7 +84,7 @@ dependencies = [
 [[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=4da1c414f347a3091824de6e48bc972e13f64202#4da1c414f347a3091824de6e48bc972e13f64202"
+source = "git+https://github.com/GetBusbar/busbar?rev=b1a4ad0df48e7f3b24757db688a66e165255a536#b1a4ad0df48e7f3b24757db688a66e165255a536"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
@@ -515,7 +515,7 @@ dependencies = [
 [[package]]
 name = "is"
 version = "0.11.1"
-source = "git+https://github.com/GetBusbar/str0m?rev=448c3fcd1f53a112e4c1c66afd32d23cd6eb090a#448c3fcd1f53a112e4c1c66afd32d23cd6eb090a"
+source = "git+https://github.com/GetBusbar/str0m?rev=8066463f7c01ed9f2013627e31652005046088a9#8066463f7c01ed9f2013627e31652005046088a9"
 dependencies = [
  "crc",
  "serde",
@@ -720,7 +720,8 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 [[package]]
 name = "sctp-proto"
 version = "0.10.5"
-source = "git+https://github.com/GetBusbar/sctp-proto?rev=b3f0bc87b84821b7768745ffeead1d0b55ef6657#b3f0bc87b84821b7768745ffeead1d0b55ef6657"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "250132c5814c3d4f01269ee7a261450bc38dd5119280262d3c13a40062cfde55"
 dependencies = [
  "bytes",
  "crc",
@@ -850,7 +851,7 @@ dependencies = [
 [[package]]
 name = "str0m"
 version = "0.24.1"
-source = "git+https://github.com/GetBusbar/str0m?rev=448c3fcd1f53a112e4c1c66afd32d23cd6eb090a#448c3fcd1f53a112e4c1c66afd32d23cd6eb090a"
+source = "git+https://github.com/GetBusbar/str0m?rev=8066463f7c01ed9f2013627e31652005046088a9#8066463f7c01ed9f2013627e31652005046088a9"
 dependencies = [
  "arrayvec",
  "base64ct",
@@ -870,11 +871,11 @@ dependencies = [
 [[package]]
 name = "str0m-proto"
 version = "0.7.0"
-source = "git+https://github.com/GetBusbar/str0m?rev=448c3fcd1f53a112e4c1c66afd32d23cd6eb090a#448c3fcd1f53a112e4c1c66afd32d23cd6eb090a"
+source = "git+https://github.com/GetBusbar/str0m?rev=8066463f7c01ed9f2013627e31652005046088a9#8066463f7c01ed9f2013627e31652005046088a9"
 dependencies = [
  "base64ct",
  "dimpl",
- "getrandom 0.3.4",
+ "fastrand",
  "serde",
  "subtle",
  "time",

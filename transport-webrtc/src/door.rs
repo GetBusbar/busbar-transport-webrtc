@@ -652,9 +652,9 @@ impl SafeSlot for Emit {
     }
 }
 
-/// One `emit` call's piece of a message for `stream`: gathered, and sent at `end`, an empty message
-/// as any other (the far end's channel yields it as an empty frame). The yield flags it answers
-/// besides ([`YIELD_STREAM_FULL`] while the stream is full).
+/// One `emit` call's piece of a message for `stream`: gathered, and sent at `end`; a message of no
+/// bytes is not sent (the media stack sends no chunk for one). The yield flags it answers besides
+/// ([`YIELD_STREAM_FULL`] while the stream is full).
 fn emit_on(
     h: &mut Held1,
     stream: u64,
@@ -688,6 +688,9 @@ fn emit_on(
         return Ok(full(f));
     }
     let text = std::mem::take(&mut g.1);
+    if g.0.is_empty() {
+        return Ok(full(f));
+    }
     let sent = f.emit(stream, &g.0, text, now);
     // The buffer stays the stream's for its next message.
     g.0.clear();
