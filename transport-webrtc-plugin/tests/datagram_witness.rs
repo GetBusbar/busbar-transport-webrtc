@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **ONE FRAMER, BOTH DOORS, ONE TABLE** — the `webrtc` framer compiled in (`linked::door`, the
+//! **ONE FRAMER, BOTH DOORS, ONE TABLE** — the `webrtc` framer compiled in (`door`, the
 //! `linked` row) and dropped in (this crate's `cdylib`, exporting the same door as `busbar_plugin_door`),
 //! each admitted by the ONE loader against the same Statement rendering and bound to a dispatcher
 //! of its own (Part 2 #2: a plugin is a plugin; THE DESIGN §11.4: compiled in or dropped in, the
@@ -36,7 +36,7 @@ const LOCAL: &str = "198.51.100.1:40000";
 const CERT: &[u8] = b"the host's public certificate, DER";
 
 fn subject() -> Subject {
-    Subject::new(busbar_transport_webrtc::linked::door, CDYLIB, "{}")
+    Subject::new(busbar_transport_webrtc::door, CDYLIB, "{}")
 }
 
 const fn abi(s: &[u8]) -> AbiStr {
@@ -320,4 +320,14 @@ fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {
     );
     assert!(load_dropped::<Transport>(&s.cdylib(), &own, s.bind(&d, "webrtc-own")).is_ok());
     assert!(conf::load::<Transport>(&s, Leg::Linked, s.bind(&d, "webrtc-linked")).is_ok());
+}
+
+#[test]
+fn the_statement_carries_the_declares_document() {
+    let row = LinkedRow::of(busbar_transport_webrtc::door).unwrap();
+    let read = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
+    assert_eq!(
+        busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes),
+        Some(&include_bytes!("../../transport-webrtc/declares.json")[..]),
+    );
 }

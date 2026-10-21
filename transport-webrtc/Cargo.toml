@@ -9,7 +9,7 @@ description = "The webrtc framer: ICE, SRTP and SCTP over the host's datagram po
 license = "Apache-2.0"
 
 [lib]
-# rlib: the LINKED door (`linked::door`), which a busbar build names as a compiled-in row. The
+# rlib: the LINKED door (`door`), which a busbar build names as a compiled-in row. The
 # dropped-in door is the sibling `busbar-transport-webrtc-plugin` cdylib, which exports this same door
 # as its one symbol; this crate exports none.
 crate-type = ["rlib"]

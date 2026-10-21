@@ -4,87 +4,32 @@
 //! KEYS ARE ZEROISED (THE DESIGN l.753): the keying material the framer holds is cleared before
 //! its memory goes back to the allocator, whether it was held to the end or refused.
 //!
-//! THE WITNESS is this binary's allocator: every block freed is read first, and a block still
+//! THE WITNESS is this crate's one test allocator (`alloc_counter`): every block freed is read first, and a block still
 //! holding a marked key (eight marker bytes, then the key's id 48 times) is counted against that
 //! id. Each test marks its own id, so tests running side by side never count each other's frees.
 //!
 //! THE RED ARM, kept: the same marked key in a plain `Vec`, dropped, IS seen, so a zero count
 //! below is the zeroising, never a witness that cannot see.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use busbar_transport_webrtc::framing::{
+use crate::framing::{
     Failed, Framing, Lane, Opening, Piece, Request, Route, Side, Terms, DESCRIPTION,
     PROFILE_AEAD_AES_128_GCM,
 };
-use busbar_transport_webrtc::shim::Shim;
+use crate::shim::Shim;
 
-const MARK: [u8; 8] = *b"ZEROISE!";
-/// A key: the marker and 48 bytes of its id (the AEAD-AES-128-GCM material's 56 bytes).
-const KEY_LEN: usize = 56;
-const IDS: usize = 8;
-
-static FREED_UNZEROED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
-
-/// The system allocator, reading every block it frees for a marked key.
-struct Watch;
-
-/// The id of the marked key at the start of `w`, if one is there whole.
-fn marked(w: &[u8]) -> Option<usize> {
-    let (mark, rest) = w.split_at_checked(MARK.len())?;
-    let id = *rest.first()?;
-    (mark == MARK
-        && rest.len() >= KEY_LEN - MARK.len()
-        && rest[..KEY_LEN - MARK.len()].iter().all(|b| *b == id))
-    .then_some(usize::from(id))
-    .filter(|id| *id < IDS)
-}
-
-// SAFETY: every call is forwarded to `System` with its own arguments; `dealloc` only reads the
-// block it is handed before forwarding.
-unsafe impl GlobalAlloc for Watch {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller's contract, forwarded.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if layout.size() >= KEY_LEN {
-            // SAFETY: `ptr` is a live block of `layout.size()` bytes until `System` frees it below,
-            // and its owner has given it up: nothing else reads or writes it during `dealloc`. It
-            // is read as plain bytes and nothing read is kept.
-            let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
-            for at in 0..=block.len() - KEY_LEN {
-                if block[at] == MARK[0] {
-                    if let Some(id) = marked(&block[at..]) {
-                        FREED_UNZEROED[id].fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-            }
-        }
-        // SAFETY: the caller's contract, forwarded.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static WATCH: Watch = Watch;
+use super::alloc_counter::{freed_unzeroed, KEY_LEN, MARK};
 
 /// The marked key `id`, on the stack (the stack is not the allocator's to watch).
 fn key(id: u8) -> [u8; KEY_LEN] {
     let mut k = [id; KEY_LEN];
     k[..MARK.len()].copy_from_slice(&MARK);
     k
-}
-
-fn freed_unzeroed(id: u8) -> usize {
-    FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
 }
 
 #[test]
