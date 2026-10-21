@@ -61,7 +61,7 @@ dependencies = [
 [[package]]
 name = "busbar-contract"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=5a86949c412ffa520879362721b781e5cfddbcfc#5a86949c412ffa520879362721b781e5cfddbcfc"
+source = "git+https://github.com/GetBusbar/busbar?rev=7fd536991b2b4941142005a8a45767b7d76e45af#7fd536991b2b4941142005a8a45767b7d76e45af"
 dependencies = [
  "async-trait",
  "base64",
@@ -84,7 +84,7 @@ dependencies = [
 [[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=5a86949c412ffa520879362721b781e5cfddbcfc#5a86949c412ffa520879362721b781e5cfddbcfc"
+source = "git+https://github.com/GetBusbar/busbar?rev=7fd536991b2b4941142005a8a45767b7d76e45af#7fd536991b2b4941142005a8a45767b7d76e45af"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
@@ -515,7 +515,7 @@ dependencies = [
 [[package]]
 name = "is"
 version = "0.11.1"
-source = "git+https://github.com/GetBusbar/str0m?rev=4fe78c94ac871e2d0aff2db976754f9caf1a29be#4fe78c94ac871e2d0aff2db976754f9caf1a29be"
+source = "git+https://github.com/GetBusbar/str0m?rev=39928c974bbaebd412eb3a9c45e7146574834964#39928c974bbaebd412eb3a9c45e7146574834964"
 dependencies = [
  "crc",
  "serde",
@@ -850,7 +850,7 @@ dependencies = [
 [[package]]
 name = "str0m"
 version = "0.24.1"
-source = "git+https://github.com/GetBusbar/str0m?rev=4fe78c94ac871e2d0aff2db976754f9caf1a29be#4fe78c94ac871e2d0aff2db976754f9caf1a29be"
+source = "git+https://github.com/GetBusbar/str0m?rev=39928c974bbaebd412eb3a9c45e7146574834964#39928c974bbaebd412eb3a9c45e7146574834964"
 dependencies = [
  "arrayvec",
  "base64ct",
@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "str0m-proto"
 version = "0.7.0"
-source = "git+https://github.com/GetBusbar/str0m?rev=4fe78c94ac871e2d0aff2db976754f9caf1a29be#4fe78c94ac871e2d0aff2db976754f9caf1a29be"
+source = "git+https://github.com/GetBusbar/str0m?rev=39928c974bbaebd412eb3a9c45e7146574834964#39928c974bbaebd412eb3a9c45e7146574834964"
 dependencies = [
  "base64ct",
  "dimpl",
