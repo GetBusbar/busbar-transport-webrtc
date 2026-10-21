@@ -306,23 +306,59 @@ impl AeadAes256GcmCipher for Unkeyed {
     }
 }
 
+/// How much dead stack is cleared after a cipher is keyed: the frames ring and this provider ran to
+/// expand the key schedule (with debug builds' temporaries), which leave copies of the round keys
+/// behind once they return.
+const STACK_SCRUB: usize = 32 * 1024;
+
+/// Clear [`STACK_SCRUB`] bytes of the stack below the caller: the frames a just-returned key
+/// construction used. A dead frame is reused by later calls, and a value moved from it while
+/// partly uninitialised (an `ArrayVec`, padding) would carry its stale round keys into a heap
+/// block freed unzeroed.
+#[inline(never)]
+fn scrub_stack() {
+    let mut dead = [0_u8; STACK_SCRUB];
+    dead.zeroize();
+    std::hint::black_box(&dead);
+}
+
+/// A boxed AES-GCM cipher over `key`, built in this frame and the frames below it only, so the
+/// caller can clear them all once it returns.
+#[inline(never)]
+fn keyed_128(key: &[u8; 16]) -> Box<dyn AeadAes128GcmCipher> {
+    match Gcm::new(&AES_128_GCM, key) {
+        Some(c) => Box::new(c),
+        None => Box::new(Unkeyed),
+    }
+}
+
+/// As [`keyed_128`], for a 256-bit key.
+#[inline(never)]
+fn keyed_256(key: &[u8; 32]) -> Box<dyn AeadAes256GcmCipher> {
+    match Gcm::new(&AES_256_GCM, key) {
+        Some(c) => Box::new(c),
+        None => Box::new(Unkeyed),
+    }
+}
+
 impl SupportedAeadAes128Gcm for Ring {
-    fn create_cipher(&self, key: [u8; 16], _encrypt: bool) -> Box<dyn AeadAes128GcmCipher> {
-        let key = Zeroizing::new(key);
-        match Gcm::new(&AES_128_GCM, key.as_slice()) {
-            Some(c) => Box::new(c),
-            None => Box::new(Unkeyed),
-        }
+    /// The session key is cleared where it was handed in, and so are the dead frames that built
+    /// its schedule: only the cipher, which ring clears when it drops, holds it.
+    fn create_cipher(&self, mut key: [u8; 16], _encrypt: bool) -> Box<dyn AeadAes128GcmCipher> {
+        let cipher = keyed_128(&key);
+        key.zeroize();
+        scrub_stack();
+        cipher
     }
 }
 
 impl SupportedAeadAes256Gcm for Ring {
-    fn create_cipher(&self, key: [u8; 32], _encrypt: bool) -> Box<dyn AeadAes256GcmCipher> {
-        let key = Zeroizing::new(key);
-        match Gcm::new(&AES_256_GCM, key.as_slice()) {
-            Some(c) => Box::new(c),
-            None => Box::new(Unkeyed),
-        }
+    /// As the 128-bit cipher.
+    fn create_cipher(&self, mut key: [u8; 32], _encrypt: bool) -> Box<dyn AeadAes256GcmCipher> {
+        let cipher = keyed_256(&key);
+        key.zeroize();
+        scrub_stack();
+        cipher
     }
 }
 
