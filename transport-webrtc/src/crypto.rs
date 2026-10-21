@@ -121,6 +121,25 @@ impl fmt::Debug for Gcm {
     }
 }
 
+impl Drop for Gcm {
+    /// ring holds the AES key schedule (its first round key is the SRTP session key) and the GHASH
+    /// key in this value and offers no zeroising: the value is overwritten in place with the
+    /// schedule of the all-zero key of the same algorithm (the same layout), and the store is kept
+    /// from being elided before the memory goes back to the allocator (THE DESIGN §5, "Datagram
+    /// media": "keys are zeroised").
+    fn drop(&mut self) {
+        let alg = self.key.algorithm();
+        let zero = [0_u8; 32];
+        if let Some(k) = zero
+            .get(..alg.key_len())
+            .and_then(|z| UnboundKey::new(alg, z).ok())
+        {
+            self.key = LessSafeKey::new(k);
+        }
+        std::hint::black_box(&self.key);
+    }
+}
+
 impl Gcm {
     fn new(alg: &'static ring::aead::Algorithm, key: &[u8]) -> Option<Self> {
         UnboundKey::new(alg, key).ok().map(|k| Gcm {
