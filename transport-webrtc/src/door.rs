@@ -646,39 +646,50 @@ impl SafeSlot for Emit {
             i.field(|x| &x.sink),
             i.lane(),
             &mut o,
-            |h, now| {
-                let full = |h: &Held1| {
-                    if h.f.stream_full(stream) {
-                        YIELD_STREAM_FULL
-                    } else {
-                        0
-                    }
-                };
-                if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
-                    return Ok(full(h));
-                }
-                let g = h.gathering.entry(stream).or_default();
-                if g.0.len() + bytes.len() > MAX_MESSAGE {
-                    // A message no channel could carry: its stream fails, alone, and nothing more
-                    // of it is gathered.
-                    h.gathering.remove(&stream);
-                    h.f.fail_stream(stream, "a message larger than the channel can ever send");
-                    return Ok(0);
-                }
-                g.0.extend_from_slice(bytes);
-                g.1 |= text;
-                if !end {
-                    return Ok(full(h));
-                }
-                let (message, text) = h.gathering.remove(&stream).unwrap_or_default();
-                if message.is_empty() {
-                    return Ok(full(h));
-                }
-                h.f.emit(stream, &message, text, now)?;
-                Ok(full(h))
-            },
+            |h, now| emit_on(h, stream, bytes, end, text, now),
         )
     }
+}
+
+/// One `emit` call's piece of a message for `stream`: gathered, and sent at `end`. The yield flags
+/// it answers besides ([`YIELD_STREAM_FULL`] while the stream is full).
+fn emit_on(
+    h: &mut Held1,
+    stream: u64,
+    bytes: &[u8],
+    end: bool,
+    text: bool,
+    now: Instant,
+) -> Result<u32, String> {
+    let full = |h: &Held1| {
+        if h.f.stream_full(stream) {
+            YIELD_STREAM_FULL
+        } else {
+            0
+        }
+    };
+    if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
+        return Ok(full(h));
+    }
+    let g = h.gathering.entry(stream).or_default();
+    if g.0.len() + bytes.len() > MAX_MESSAGE {
+        // A message no channel could carry: its stream fails, alone, and nothing more of it is
+        // gathered.
+        h.gathering.remove(&stream);
+        h.f.fail_stream(stream, "a message larger than the channel can ever send");
+        return Ok(0);
+    }
+    g.0.extend_from_slice(bytes);
+    g.1 |= text;
+    if !end {
+        return Ok(full(h));
+    }
+    let (message, text) = h.gathering.remove(&stream).unwrap_or_default();
+    if message.is_empty() {
+        return Ok(full(h));
+    }
+    h.f.emit(stream, &message, text, now)?;
+    Ok(full(h))
 }
 
 /// `timer`: the deadline the framing asked for passed.

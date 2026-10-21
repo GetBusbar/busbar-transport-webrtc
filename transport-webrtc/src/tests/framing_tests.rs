@@ -22,15 +22,15 @@ const PROFILE: u32 = PROFILE_AEAD_AES_128_GCM;
 const OPUS: &[u8] = &[0xF8, 0x01, 0x02, 0x03, 0x04];
 
 /// One end: its framing and its host's view.
-struct End {
-    f: Framing,
+pub(crate) struct End {
+    pub(crate) f: Framing,
     addr: SocketAddr,
     paths: HashMap<SocketAddr, u32>,
     by_id: HashMap<u32, SocketAddr>,
     bound: u32,
     verified: bool,
     keyed: bool,
-    pieces: Vec<Piece>,
+    pub(crate) pieces: Vec<Piece>,
     requests: Vec<Request>,
     sent: Vec<Route>,
 }
@@ -139,7 +139,7 @@ fn pump(a: &mut End, b: &mut End, now: Instant) {
 }
 
 /// Run the clock and the pump for `ms`, in 10 ms steps.
-fn run(a: &mut End, b: &mut End, start: &mut Instant, ms: u64) {
+pub(crate) fn run(a: &mut End, b: &mut End, start: &mut Instant, ms: u64) {
     for _ in 0..ms / 10 {
         *start += Duration::from_millis(10);
         for e in [&mut *a, &mut *b] {
@@ -160,7 +160,7 @@ fn opening() -> Opening {
 }
 
 /// Two ends through the rendezvous, ICE, verification and keying: a connected association.
-fn connected() -> (End, End, Instant) {
+pub(crate) fn connected() -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
     let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);

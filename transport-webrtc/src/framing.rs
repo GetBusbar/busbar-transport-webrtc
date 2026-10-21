@@ -1211,4 +1211,4 @@ fn target(r: Request) -> u32 {
 
 #[cfg(test)]
 #[path = "tests/framing_tests.rs"]
-mod tests;
+pub(crate) mod tests;
