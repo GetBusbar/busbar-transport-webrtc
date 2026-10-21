@@ -12,8 +12,19 @@
 //! script's pin, the two folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under
 //! `--release`. The framer's own both-ways drive is `tests/datagram_witness.rs`.
 
+use busbar_plugin_loader::dispatch::LoadedDoor;
+
+/// This plugin's own door, named for the loader.
+fn loaded_door() -> LoadedDoor {
+    // SAFETY: `busbar_transport_webrtc::door` is this crate's own door: it answers the `'static`
+    // door of this plugin.
+    #[allow(unused_unsafe)]
+    let loaded = unsafe { LoadedDoor::from_raw(busbar_transport_webrtc::door) };
+    loaded
+}
+
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_transport_webrtc::door,
+    loaded: loaded_door(),
     cdylib: "busbar_transport_webrtc_plugin",
     inputs: include_str!("conformance.json"),
 }
