@@ -36,20 +36,14 @@ const LOCAL: &str = "198.51.100.1:40000";
 const CERT: &[u8] = b"the host's public certificate, DER";
 
 fn subject() -> Subject {
-    Subject::new(busbar_transport_webrtc::linked::door, CDYLIB, "{}")
+    Subject::of_macro(busbar_transport_webrtc::linked::MACRO_DOOR, CDYLIB, "{}")
 }
 
-const fn abi(s: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+const fn abi(s: &'static [u8]) -> AbiStr {
+    AbiStr::of_bytes(s)
 }
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NONE: AbiStr = AbiStr::ABSENT;
 
 /// The host's buffers for one framer op.
 struct Host {
@@ -288,7 +282,8 @@ fn expected() -> Vec<String> {
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let s = subject();
-    let linked_row = LinkedRow::of(s.door).expect("the linked door is admitted");
+    let linked_row = LinkedRow::of_macro(busbar_transport_webrtc::linked::MACRO_DOOR)
+        .expect("the linked door is admitted");
     assert_eq!(
         linked_row.statement,
         s.stated(),

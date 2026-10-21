@@ -13,7 +13,7 @@
 //! `--release`. The framer's own both-ways drive is `tests/datagram_witness.rs`.
 
 busbar_plugin_loader::conformance_suite! {
-    door: busbar_transport_webrtc::door::door,
+    door: busbar_transport_webrtc::door::MACRO_DOOR,
     cdylib: "busbar_transport_webrtc_plugin",
     inputs: include_str!("conformance.json"),
 }
