@@ -30,7 +30,7 @@ use crate::framing::{
 use crate::shim::Shim;
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
-use busbar_contract::alloc_counter::{freed_unzeroed, marked_key, watch};
+use busbar_contract::alloc_counter::{freed_unzeroed, last_seen, marked_key, watch};
 
 /// A key: the marker and 48 bytes of its id (the AEAD-AES-128-GCM material's 56 bytes).
 const KEY_LEN: usize = 56;
@@ -424,9 +424,13 @@ fn keying_material_on_the_accepted_path_is_never_freed_unzeroed() {
     let (dial, accept, _) = connected_with(&material);
     assert!(dial.keyed && accept.keyed, "both ends took the material");
     drop((dial, accept));
+    // `nth` names the secret (watch order): 0 the material; per half (+25 for the second) 1 the
+    // master salt, 2 and 3 the RTP and RTCP session salts, 4..=14 and 15..=25 the RTP and RTCP
+    // session keys' round keys.
     assert_eq!(
         freed_unzeroed(5),
         0,
-        "a copy of the keying material was freed unzeroed"
+        "a copy of the keying material was freed unzeroed, last: {:?}",
+        last_seen(5)
     );
 }
