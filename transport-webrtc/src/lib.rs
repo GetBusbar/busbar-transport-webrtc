@@ -29,7 +29,7 @@ pub mod stun;
 
 /// THE TRANSPORT AXIS ENTRY: the row's key, the layers it declares and its door.
 pub mod linked {
-    pub use crate::door::{door, KEY};
+    pub use crate::door::{door, KEY, MACRO_DOOR};
     /// The layers this wire declares it can be built over: none (the datagram port is the host's).
     pub const COMPOSES_OVER: &[&str] = &[];
     /// Whether this wire carries sessions: yes, an association is one (its claim row's `session`).
