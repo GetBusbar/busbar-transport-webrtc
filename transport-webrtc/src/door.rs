@@ -37,17 +37,17 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
-use busbar_contract::abi::transport::check::check_keying;
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnFacts, ConnIn,
     ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
-    FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
-    LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
-    HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
-    UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, KeyingMaterial,
+    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn,
+    WriteIn, CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM,
+    HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
+    MAX_KEYING_BYTES, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER,
+    SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
@@ -164,6 +164,29 @@ fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
     s.as_str().ok()?.parse().ok()
 }
 
+/// The contract's `check_keying` rules, read through the lent item's accessors (its own size, a
+/// nonzero profile, `1..=MAX_KEYING_BYTES` bytes behind a non-NULL pointer): the field the item
+/// breaks, or `Ok`.
+fn check_keying_lent(k: Lent<'_, KeyingMaterial>) -> Result<(), &'static str> {
+    if k.size() as usize != std::mem::size_of::<KeyingMaterial>() {
+        return Err("keying.size");
+    }
+    if k.profile() == 0 {
+        return Err("keying.profile");
+    }
+    if k.len() == 0 {
+        return Err("keying.len");
+    }
+    if k.len() as u64 > MAX_KEYING_BYTES {
+        return Err("keying.len");
+    }
+    // A NULL pointer reads as no bytes, and `len` is nonzero here.
+    if k.bytes().is_empty() {
+        return Err("keying.bytes");
+    }
+    Ok(())
+}
+
 /// Read the lane's host state into the framing: new paths, the bound path, the verified bit and
 /// the keying-material item.
 fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Result<(), String> {
@@ -177,8 +200,8 @@ fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Resu
     );
     let keying = match lane.keying() {
         Some(k) => {
-            check_keying(&k)
-                .map_err(|f| format!("the keying-material item is malformed: {}", f.field))?;
+            check_keying_lent(k)
+                .map_err(|f| format!("the keying-material item is malformed: {f}"))?;
             Some((k.profile(), k.bytes()))
         }
         None => None,
