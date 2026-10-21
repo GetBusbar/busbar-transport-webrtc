@@ -30,13 +30,11 @@ mod stun;
 /// THE DOOR: this plugin's one public item (BUSBAR-1.6.0.md l.3567, Crate shape).
 pub use door::door;
 
-/// The unit tests' one allocator: busbar-contract's test-only `alloc-counter` (a dev-dependency
-/// feature), which counts the hot-path gate's allocations and reads every freed block for the
-/// zeroise gate's marked keys. This crate holds no `unsafe`.
+/// The unit tests' one allocator (`tests/test_allocator.rs`): busbar-contract's test-only
+/// `alloc-counter`. This crate holds no `unsafe`.
 #[cfg(test)]
-#[global_allocator]
-static A: busbar_contract::alloc_counter::Counting =
-    busbar_contract::alloc_counter::Counting::new();
+#[path = "tests/test_allocator.rs"]
+mod test_allocator;
 
 #[cfg(test)]
 #[path = "tests/hot_path_alloc_tests.rs"]
