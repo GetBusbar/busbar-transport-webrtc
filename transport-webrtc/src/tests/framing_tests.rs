@@ -583,3 +583,30 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
         "with its failure piece"
     );
 }
+
+/// THE CHECK SECRET NEVER REACHES A LOG (THE DESIGN §5, "keys are zeroised"; the same class of
+/// secret): the media stack logs its ICE credentials with `{:?}` (debug and trace), and a busbar
+/// that links this framer has its log subscriber installed, so their Debug form must not state the
+/// password. RED before the fix: str0m's IceCreds derived Debug and printed it in clear.
+#[test]
+fn the_ice_credentials_debug_form_never_states_the_password() {
+    let f = Framing::begin(
+        Side::Accept,
+        CERT,
+        Some("203.0.113.9:3478".parse().expect("an address")),
+        &Opening::default(),
+        Instant::now(),
+    )
+    .expect("begins");
+    let pass = f.local_creds.pass.clone();
+    assert_eq!(pass.len(), 32, "a 128-bit secret, hex");
+    let shown = format!("{:?}", f.local_creds);
+    assert!(
+        !shown.contains(&pass),
+        "the password is in the Debug form: {shown}"
+    );
+    assert!(
+        shown.contains(&f.local_creds.ufrag),
+        "the user name is shown: {shown}"
+    );
+}
