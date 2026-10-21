@@ -10,8 +10,8 @@
 # `.busbar-ref`; no sibling-checkout path dependency ships in any manifest.
 #
 # THIRD-PARTY VERSIONS ARE THE FLEET'S, NOT THIS REPO'S. The table below is busbar's own root
-# `[workspace.dependencies]` (third-party rows) at busbar 4c81029e323f86271aba54715f46797cfc4cfbd3, followed by the plugin-only rows
-# of busbar's `.github/fleet/deps.toml` at 4c81029e323f86271aba54715f46797cfc4cfbd3. A member takes a crate with
+# `[workspace.dependencies]` (third-party rows) at busbar 94ca36e2f0ce715dc661dbbe1642eebbbe154aeb, followed by the plugin-only rows
+# of busbar's `.github/fleet/deps.toml` at 94ca36e2f0ce715dc661dbbe1642eebbbe154aeb. A member takes a crate with
 # `{ workspace = true }` (adding features if it needs them); a crate in neither table is a new
 # `deps.toml` row in busbar first. CI holds this repo's Cargo.lock to busbar's lock at the pin.
 [workspace]
@@ -35,9 +35,9 @@ repository = "https://github.com/GetBusbar/busbar-transport-webrtc"
 needless_update = "allow"
 
 [workspace.dependencies]
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "4c81029e323f86271aba54715f46797cfc4cfbd3" }
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "4c81029e323f86271aba54715f46797cfc4cfbd3" }
-# busbar's root [workspace.dependencies], third-party rows, at 4c81029e323f86271aba54715f46797cfc4cfbd3
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "94ca36e2f0ce715dc661dbbe1642eebbbe154aeb" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "94ca36e2f0ce715dc661dbbe1642eebbbe154aeb" }
+# busbar's root [workspace.dependencies], third-party rows, at 94ca36e2f0ce715dc661dbbe1642eebbbe154aeb
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -108,7 +108,7 @@ url = "2"
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "ring"] }
 webpki-roots = "1"
 zeroize = "1"
-# busbar .github/fleet/deps.toml [plugin-deps], at 4c81029e323f86271aba54715f46797cfc4cfbd3
+# busbar .github/fleet/deps.toml [plugin-deps], at 94ca36e2f0ce715dc661dbbe1642eebbbe154aeb
 fallible-iterator = "0.2"
 ldap3 = { version = "0.12", default-features = false, features = ["sync"] }
 mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
@@ -125,7 +125,7 @@ redis = { version = "1", default-features = false, features = ["script"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 ulid = "1"
 
-# busbar .github/fleet/deps.toml [git-sources], at 4c81029e323f86271aba54715f46797cfc4cfbd3: the crates.io crates this repo
+# busbar .github/fleet/deps.toml [git-sources], at 94ca36e2f0ce715dc661dbbe1642eebbbe154aeb: the crates.io crates this repo
 # takes from GetBusbar forks, each at a pinned commit (the row's reason is reviewed there).
 [patch.crates-io]
 dimpl = { git = "https://github.com/GetBusbar/dimpl", rev = "88f01226145c6a904986156e92610b1eb642f143" }
