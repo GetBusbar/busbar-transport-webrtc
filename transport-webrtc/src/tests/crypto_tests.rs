@@ -123,3 +123,37 @@ fn the_srtp_key_derivation_block_is_aes() {
     Ring.srtp_aes_128_ecb_round(&key[..15], &input, &mut out);
     assert_eq!(out, [0_u8; 16]);
 }
+
+/// `Debug` of a keyed shim prints neither the SRTP keying material nor an opened plaintext: a
+/// `{:?}` in a log line carries no key bytes.
+#[test]
+fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
+    // 0xCA 0x4A 0x21 0x7E: a canary no other field holds; Debug prints bytes in decimal.
+    let canary: [u8; 4] = [0xCA, 0x4A, 0x21, 0x7E];
+    let material: Vec<u8> = canary
+        .iter()
+        .copied()
+        .cycle()
+        .take(2 * 16 + 2 * 12)
+        .collect();
+    let shim = Shim::default();
+    shim.keyed(&material, PROFILE_AEAD_AES_128_GCM).unwrap();
+    shim.opened(&canary.repeat(4));
+    assert!(shim.holds_keying());
+    let out = format!("{shim:?}");
+    let dec = canary
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hex = canary.iter().map(|b| format!("{b:x}")).collect::<String>();
+    assert!(
+        !out.contains(&dec),
+        "keying/plaintext bytes in Debug: {out}"
+    );
+    assert!(
+        !out.contains(&hex),
+        "keying/plaintext bytes in Debug: {out}"
+    );
+    assert!(out.contains("<redacted"), "no redaction marker: {out}");
+}
