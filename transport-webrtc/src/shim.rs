@@ -181,8 +181,9 @@ const SPARE: usize = 8;
 /// How far ahead the shim's timer lies: it has nothing to time.
 const IDLE: Duration = Duration::from_secs(3600);
 
-/// The relay's state.
-#[derive(Debug, Default)]
+/// The relay's state. Its `Debug` prints the SRTP keying material and every queued plaintext as
+/// `<redacted>` (with lengths and counts only): `Zeroizing`'s own `Debug` prints the bytes.
+#[derive(Default)]
 pub struct Relay {
     active: Option<bool>,
     keying: Option<(Zeroizing<Vec<u8>>, SrtpProfile)>,
@@ -194,6 +195,46 @@ pub struct Relay {
     spare_seal: Vec<Vec<u8>>,
     closed: bool,
     now: Option<Instant>,
+}
+
+impl std::fmt::Debug for Relay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            active,
+            keying,
+            connected,
+            connected_owed,
+            opened,
+            spare_opened,
+            to_seal,
+            spare_seal,
+            closed,
+            now,
+        } = self;
+        f.debug_struct("Relay")
+            .field("active", active)
+            .field(
+                "keying",
+                &keying
+                    .as_ref()
+                    .map(|(k, p)| (format!("<redacted {} bytes>", k.len()), p)),
+            )
+            .field("connected", connected)
+            .field("connected_owed", connected_owed)
+            .field(
+                "opened",
+                &format_args!("<redacted {} frames>", opened.len()),
+            )
+            .field("spare_opened", &spare_opened.len())
+            .field(
+                "to_seal",
+                &format_args!("<redacted {} frames>", to_seal.len()),
+            )
+            .field("spare_seal", &spare_seal.len())
+            .field("closed", closed)
+            .field("now", now)
+            .finish()
+    }
 }
 
 /// One association's shim: the media stack's handshake slot, owned by that association's stack.
