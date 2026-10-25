@@ -276,12 +276,6 @@ impl Shim {
         }
     }
 
-    /// Whether the host reported the far end verified.
-    #[must_use]
-    pub fn is_connected(&self) -> bool {
-        self.lock().connected
-    }
-
     /// Plaintext the host's secure layer opened (dropped before "connected").
     pub fn opened(&self, plaintext: &[u8]) {
         let mut r = self.lock();
@@ -291,12 +285,6 @@ impl Shim {
         let mut b = r.spare_opened.pop().unwrap_or_default();
         b.extend_from_slice(plaintext);
         r.opened.push_back(b);
-    }
-
-    /// The role the media stack settled: `Some(true)` = this end opens the handshake.
-    #[must_use]
-    pub fn active(&self) -> Option<bool> {
-        self.lock().active
     }
 
     /// Whether material is still held (not yet handed to the media stack).
