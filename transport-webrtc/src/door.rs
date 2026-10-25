@@ -303,7 +303,7 @@ fn answer(
             return Err("the rendezvous terms do not fit the host's frame buffer".into());
         } else {
             // Not room for them whole: the host drains and calls again.
-            h.partial_terms(t);
+            h.f.restore_terms(t);
             more = true;
         }
     }
@@ -375,12 +375,6 @@ fn answer(
     }
     o.set(|o| &o.yielded.flags, flags);
     Ok(())
-}
-
-impl Held1 {
-    fn partial_terms(&mut self, t: crate::framing::Terms) {
-        self.f.restore_terms(t);
-    }
 }
 
 /// Run `op` on the framing `token` names, then answer what it owes, with the yield flags `op`
