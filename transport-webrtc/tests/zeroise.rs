@@ -30,7 +30,27 @@ const MARK: [u8; 8] = *b"ZEROISE!";
 const KEY_LEN: usize = 56;
 const IDS: usize = 8;
 
+/// Frees of a marked key, unzeroed, that did not come from the media stack: the plugin's own.
 static FREED_UNZEROED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+/// Frees of a marked key, unzeroed, made from inside `str0m`, `dimpl` or `ring` (the known residual).
+static FREED_UPSTREAM: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+
+thread_local!(static ATTRIBUTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+/// Whether the free being made is made from inside a published upstream crate: the call stack
+/// names one of them. (A re-entrant free, made by the stack capture itself, is never upstream.)
+fn from_upstream() -> bool {
+    if ATTRIBUTING.with(|a| a.replace(true)) {
+        return false;
+    }
+    let stack = std::backtrace::Backtrace::force_capture().to_string();
+    ATTRIBUTING.with(|a| a.set(false));
+    // `ring::` alone would also match `string::`: it must start a path (after `: ` or `<`).
+    stack.contains("str0m::")
+        || stack.contains("dimpl::")
+        || stack.contains(": ring::")
+        || stack.contains("<ring::")
+}
 
 /// The system allocator, reading every block it frees for a marked key.
 struct Watch;
@@ -63,7 +83,12 @@ unsafe impl GlobalAlloc for Watch {
             for at in 0..=block.len() - KEY_LEN {
                 if block[at] == MARK[0] {
                     if let Some(id) = marked(&block[at..]) {
-                        FREED_UNZEROED[id].fetch_add(1, Ordering::SeqCst);
+                        let counter = if from_upstream() {
+                            &FREED_UPSTREAM
+                        } else {
+                            &FREED_UNZEROED
+                        };
+                        counter[id].fetch_add(1, Ordering::SeqCst);
                     }
                 }
             }
@@ -83,8 +108,14 @@ fn key(id: u8) -> [u8; KEY_LEN] {
     k
 }
 
+/// Unzeroed frees of key `id` made by the plugin's own code.
 fn freed_unzeroed(id: u8) -> usize {
     FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
+}
+
+/// Unzeroed frees of key `id` made from inside str0m, dimpl or ring.
+fn freed_upstream(id: u8) -> usize {
+    FREED_UPSTREAM[usize::from(id)].load(Ordering::SeqCst)
 }
 
 #[test]
@@ -313,13 +344,11 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
     (dial, accept, now)
 }
 
-/// KEYS ARE ZEROISED ON THE ACCEPTED PATH (THE DESIGN §5, "Datagram media": "keys are zeroised";
-/// busbar Q128 transport-webrtc H2): keying material presented to a verified association is handed
-/// to the media stack, which derives its SRTP contexts from it; when both ends are dropped no freed
-/// block holds the key. RED on the unpatched media stack: str0m 0.24.1 copied the material into a
-/// plain `Vec`, and dimpl 0.7.4's `KeyingMaterial` freed its bytes unzeroed.
+/// THE PLUGIN'S OWN COPIES on the accepted path: keying material presented to a verified
+/// association passes through the framing and its shim, and none of what the plugin holds is
+/// freed unzeroed. Frees made from inside str0m, dimpl or ring are counted apart (next test).
 #[test]
-fn keying_material_on_the_accepted_path_is_never_freed_unzeroed() {
+fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     let material = key(5);
     let (dial, accept, _) = connected_with(&material);
     assert!(dial.keyed && accept.keyed, "both ends took the material");
@@ -327,6 +356,23 @@ fn keying_material_on_the_accepted_path_is_never_freed_unzeroed() {
     assert_eq!(
         freed_unzeroed(5),
         0,
-        "a copy of the keying material was freed unzeroed"
+        "a copy of the keying material the plugin holds was freed unzeroed"
     );
+}
+
+/// KNOWN RESIDUAL, ASSERTED AS KNOWN (listed in the README): the published str0m 0.24.1 and
+/// dimpl 0.7.4 free their internal copies of the keying material unzeroed (the zeroize-on-drop
+/// fork patches were dropped, OWNER 2026-10-25). This test pins that the residual is real and
+/// confined to those crates: it fails when upstream starts zeroising, which is the cue to turn it
+/// into a gate and delete the README note.
+#[test]
+fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
+    let material = key(6);
+    let (dial, accept, _) = connected_with(&material);
+    drop((dial, accept));
+    assert!(
+        freed_upstream(6) >= 1,
+        "str0m/dimpl no longer free the keying material unzeroed: make this a gate and drop the README note"
+    );
+    assert_eq!(freed_unzeroed(6), 0, "the plugin's own copies are zeroised");
 }

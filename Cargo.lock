@@ -269,7 +269,8 @@ dependencies = [
 [[package]]
 name = "dimpl"
 version = "0.7.4"
-source = "git+https://github.com/GetBusbar/dimpl?rev=88f01226145c6a904986156e92610b1eb642f143#88f01226145c6a904986156e92610b1eb642f143"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07d467d37bfdcc290bb8dcbedc8ca356eb730e46459b1687f98c3bae28aa6814"
 dependencies = [
  "arrayvec",
  "log",
@@ -278,7 +279,6 @@ dependencies = [
  "rand",
  "subtle",
  "time",
- "zeroize",
 ]
 
 [[package]]
@@ -547,14 +547,14 @@ dependencies = [
 [[package]]
 name = "is"
 version = "0.11.1"
-source = "git+https://github.com/GetBusbar/str0m?rev=710e48e449424ab0c39b475bf7fc8247d79c2cd9#710e48e449424ab0c39b475bf7fc8247d79c2cd9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6edbbdc611843e8c65878ee735f68c495cede11ae5a9582b17fe0369c456ef5"
 dependencies = [
  "crc",
  "serde",
  "str0m-proto",
  "subtle",
  "tracing",
- "zeroize",
 ]
 
 [[package]]
@@ -718,7 +718,8 @@ dependencies = [
 [[package]]
 name = "ring"
 version = "0.17.14"
-source = "git+https://github.com/GetBusbar/ring?rev=c0471befa70cf942622f002be1529a16c7d3509a#c0471befa70cf942622f002be1529a16c7d3509a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
 dependencies = [
  "cc",
  "cfg-if",
@@ -883,7 +884,8 @@ dependencies = [
 [[package]]
 name = "str0m"
 version = "0.24.1"
-source = "git+https://github.com/GetBusbar/str0m?rev=710e48e449424ab0c39b475bf7fc8247d79c2cd9#710e48e449424ab0c39b475bf7fc8247d79c2cd9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e80c4a4ef148e4a9fd15b9525c7f376d97e86729f19880b591ad220f1288c0f"
 dependencies = [
  "arrayvec",
  "base64ct",
@@ -897,13 +899,13 @@ dependencies = [
  "subtle",
  "time",
  "tracing",
- "zeroize",
 ]
 
 [[package]]
 name = "str0m-proto"
 version = "0.7.0"
-source = "git+https://github.com/GetBusbar/str0m?rev=710e48e449424ab0c39b475bf7fc8247d79c2cd9#710e48e449424ab0c39b475bf7fc8247d79c2cd9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8f3d99f2cf6c76a502e45feb896ea71e54787ede8744bcdb215acfbfcb905dd"
 dependencies = [
  "base64ct",
  "dimpl",
