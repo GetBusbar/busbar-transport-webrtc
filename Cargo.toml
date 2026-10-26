@@ -125,10 +125,3 @@ protoc-bin-vendored = "3"
 redis = { version = "1", default-features = false, features = ["script"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 ulid = "1"
-
-# busbar .github/fleet/deps.toml [git-sources], at 71b70e487bebe5ae2feb1fabf32d8906edf4ccad: the crates.io crates this repo
-# takes from GetBusbar forks, each at a pinned commit (the row's reason is reviewed there).
-[patch.crates-io]
-dimpl = { git = "https://github.com/GetBusbar/dimpl", rev = "88f01226145c6a904986156e92610b1eb642f143" }
-ring = { git = "https://github.com/GetBusbar/ring", rev = "c0471befa70cf942622f002be1529a16c7d3509a" }
-str0m = { git = "https://github.com/GetBusbar/str0m", rev = "710e48e449424ab0c39b475bf7fc8247d79c2cd9" }
