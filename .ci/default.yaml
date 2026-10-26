@@ -239,7 +239,11 @@ env:
     [ "$PLUGIN_LANG" = c ] && step always "C: the kind's conformance through load_dropped" s_cconf
     exit $fail
 on:
-  move: [pin, linux]
+  move:
+    - checks: [pin, linux]
+    - checks: [conformance]
+      blocks: false
+  landed: [conformance]
 checks:
   pin:
     # ci / the busbar pin is one commit
@@ -256,3 +260,9 @@ checks:
     needs: [pin]
     run: |
       exec bash -c "$PLUGIN_CI" plugin-ci linux
+  conformance:
+    priority: low
+    requires: [cc, git, curl, docker, python3-venv]
+    run: |
+      exec bash testing/conformance/run.sh
+    outputs: [target/conformance/]
