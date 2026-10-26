@@ -84,7 +84,7 @@ fi
 command -v docker >/dev/null || { verdict not-run true "docker is not available for the browser image"; exit 3; }
 mkdir -p "$W/pw" "$W/shim"
 cp "$H/package.json" "$H/package-lock.json" "$W/pw/"
-if ! docker run --rm --network host -v "$W/pw:/pw" -w /pw "$IMAGE" npm ci --ignore-scripts --no-audit --no-fund >>"$LOG" 2>&1; then
+if ! docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$W/pw:/pw" -w /pw "$IMAGE" npm ci --ignore-scripts --no-audit --no-fund >>"$LOG" 2>&1; then
   verdict not-run true "npm ci of the locked Playwright $PW_VERSION failed in the browser image"
   exit 3
 fi
