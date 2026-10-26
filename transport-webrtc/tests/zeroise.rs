@@ -313,12 +313,14 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
     (dial, accept, now)
 }
 
-/// KEYS ARE ZEROISED ON THE ACCEPTED PATH (THE DESIGN §5, "Datagram media": "keys are zeroised";
-/// busbar Q128 transport-webrtc H2): keying material presented to a verified association is handed
-/// to the media stack, which derives its SRTP contexts from it; when both ends are dropped no freed
-/// block holds the key. RED on the unpatched media stack: str0m 0.24.1 copied the material into a
-/// plain `Vec`, and dimpl 0.7.4's `KeyingMaterial` freed its bytes unzeroed.
+/// KNOWN RESIDUAL, NOT A GATE: keying material presented to a verified association is handed to the
+/// media stack, which derives its SRTP contexts from it. The published str0m 0.24.1 copies the
+/// material into a plain `Vec`, and dimpl 0.7.4's `KeyingMaterial` frees its bytes unzeroed (the
+/// zeroize-on-drop fork patches were dropped, OWNER 2026-10-25). This witness stays so the residual is
+/// measurable: run it with `--ignored` to see the upstream copies; it passes once upstream zeroises.
+/// What the plugin itself holds is gated by the other tests in this file.
 #[test]
+#[ignore = "known residual: str0m/dimpl do not zeroise their internal copies of the keying material"]
 fn keying_material_on_the_accepted_path_is_never_freed_unzeroed() {
     let material = key(5);
     let (dial, accept, _) = connected_with(&material);
