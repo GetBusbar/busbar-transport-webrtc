@@ -9,7 +9,7 @@
 //!   stream 0). The host's certificate comes in [`ConnFacts::local_certificate`] (public DER; its
 //!   fingerprint is what the description states), the host port's address in the lane. A dialling
 //!   framing's opening fields name what it offers: one `channel` field per data channel (its label,
-//!   streams `1, 2, ...` in order) and `media: audio` for one Opus line (stream [`MEDIA_BASE`]).
+//!   streams `1, 2, ...` in order) and `media: audio` for one Opus line (stream `MEDIA_BASE`).
 //! * `ingest`: one datagram, or the far end's description, as the lane names it; the lane's host
 //!   state (bound path, verified bit, keying-material item, new paths) is read first, on every call
 //!   that carries a lane.
@@ -50,66 +50,34 @@ use busbar_contract::abi::transport::{
     UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
-use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE, MEDIA_BASE};
+use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE};
 
 // ── the statement ────────────────────────────────────────────────────────────────────────────────
 
 /// The claim this entry answers for.
 pub const KEY: &str = "webrtc";
 
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-
 const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
 
 /// The claim's row: no selector forms (an association is reached through the rendezvous, never
 /// selected on its datagrams), a session whose first unit opens on its first datagram.
-const CLAIMS: &[Claim] = &[Claim {
-    selector_forms: abi_str(""),
-    egress_selector_forms: abi_str(""),
-    facts: std::ptr::null(),
-    facts_len: 0,
-    status_namespace: NONE,
-    session: 1,
-    session_bound: 1,
-    unit0_trigger: UNIT0_FIRST_DATAGRAM,
-    status_at: 0,
-    _reserved: 0,
+const CLAIMS: &[Claim] = &[{
+    let mut c = Claim::EMPTY;
+    c.selector_forms = abi_str("");
+    c.egress_selector_forms = abi_str("");
+    c.session = 1;
+    c.session_bound = 1;
+    c.unit0_trigger = UNIT0_FIRST_DATAGRAM;
+    c
 }];
 
 /// The transport kind's tail: a datagram framer, composing over nothing (the port is the host's).
-const TAIL: TransportTail = TransportTail {
-    head: KindTailHead {
-        size: std::mem::size_of::<TransportTail>() as u32,
-        _reserved: 0,
-    },
-    role: ROLE_FRAMER,
-    framing: FRAMING_DATAGRAM,
-    facts: 0,
-    handshake_max_steps: 0,
-    composes_over: std::ptr::null(),
-    composes_over_len: 0,
-    claim_rows: CLAIMS.as_ptr(),
-    claim_rows_len: CLAIMS.len(),
-    upgrades_to: std::ptr::null(),
-    upgrades_to_len: 0,
-    handoff_from: NONE,
-    handoff_to: NONE,
-    handoff_binding_fact: NONE,
-    handshake_frame_kind: NONE,
-    status_rows: std::ptr::null(),
-    status_rows_len: 0,
-    settings: std::ptr::null(),
-    settings_len: 0,
-    // A datagram lane states no status rows, so it states no fault table either: its pieces carry
-    // no reading (`FAULT_NONE`), as the byte-stream carrier's do.
-    fault_rows: std::ptr::null(),
-    fault_rows_len: 0,
-    // The stride this framer writes its pieces at: the contract's it was built against.
-    frame_piece_size: FRAME_PIECE_SIZE,
-    _reserved: 0,
+const TAIL: TransportTail = {
+    let mut t = TransportTail::EMPTY.with_claim_rows(CLAIMS);
+    t.role = ROLE_FRAMER;
+    t.framing = FRAMING_DATAGRAM;
+    t.frame_piece_size = FRAME_PIECE_SIZE;
+    t
 };
 
 /// The door's Statement.
@@ -793,9 +761,6 @@ fn piece_flags(p: &Piece, continued: bool, whole: bool, n: usize) -> u16 {
     }
     flags
 }
-
-/// The first media stream, for a host that names streams.
-pub const FIRST_MEDIA_STREAM: u64 = MEDIA_BASE;
 
 #[cfg(test)]
 #[path = "tests/door_tests.rs"]
