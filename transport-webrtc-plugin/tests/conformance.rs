@@ -12,7 +12,7 @@
 //! script's pin, the two folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under
 //! `--release`. The framer's own both-ways drive is `tests/datagram_witness.rs`.
 
-busbar_plugin_loader::conformance_suite! {
+busbar_test_kit::conformance_suite! {
     door: busbar_transport_webrtc::door::door,
     cdylib: "busbar_transport_webrtc_plugin",
     inputs: include_str!("conformance.json"),
