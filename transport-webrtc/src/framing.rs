@@ -1159,11 +1159,6 @@ impl Framing {
         self.pieces.pop_front()
     }
 
-    /// Put a piece back at the front.
-    pub fn unpiece(&mut self, p: Piece) {
-        self.pieces.push_front(p);
-    }
-
     /// Whether anything is still owed.
     #[must_use]
     pub fn owes(&self) -> bool {
