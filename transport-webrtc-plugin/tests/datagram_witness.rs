@@ -24,9 +24,9 @@ use busbar_contract::abi::transport::{
     FramerOut, FramerSink, IngestIn, ListenIn, ListenOut, LocateIn, LocateOut, LANE_RENDEZVOUS,
     PIECE_END_OF_FRAME, PIECE_TEXT, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
 };
-use busbar_plugin_loader::conformance::{self as conf, Leg, Subject};
 use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
 use busbar_plugin_loader::dispatch::{load_dropped, Frame, InFrame, LinkedRow, OutFrame, Plugin};
+use busbar_test_kit::conformance::{self as conf, Leg, Subject};
 
 /// The crate whose cdylib is the dropped-in door.
 const CDYLIB: &str = "busbar_transport_webrtc_plugin";
@@ -288,7 +288,7 @@ fn expected() -> Vec<String> {
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let s = subject();
-    let linked_row = LinkedRow::of(s.door).expect("the linked door is admitted");
+    let linked_row = LinkedRow::of_raw(s.door).expect("the linked door is admitted");
     assert_eq!(
         linked_row.statement,
         s.stated(),
