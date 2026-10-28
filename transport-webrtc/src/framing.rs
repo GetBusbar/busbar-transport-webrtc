@@ -25,7 +25,7 @@
 //!   or move to it from the bound one;
 //! * the rendezvous terms the host's secure layer runs under.
 //!
-//! # The guards (THE DESIGN l.756-765)
+//! # The guards
 //!
 //! * AEAD-AES-GCM only: a keying-material item under any other profile fails the framing.
 //! * Application data waits for peer verification: until the host's verified bit, a secured
@@ -1141,8 +1141,6 @@ impl Framing {
             _ => {}
         }
     }
-
-    // ── what the framing owes ───────────────────────────────────────────────────────────────────
 
     /// The next route.
     pub fn next_route(&mut self) -> Option<Route> {
