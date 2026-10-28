@@ -288,7 +288,7 @@ fn expected() -> Vec<String> {
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let s = subject();
-    let linked_row = LinkedRow::of(s.door).expect("the linked door is admitted");
+    let linked_row = LinkedRow::of_raw(s.door).expect("the linked door is admitted");
     assert_eq!(
         linked_row.statement,
         s.stated(),
