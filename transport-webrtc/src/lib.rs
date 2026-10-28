@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `webrtc` TRANSPORT: a datagram framer holding ICE, SRTP and SCTP (`BUSBAR-1.6.0.md` THE
-//! DESIGN §5, "Datagram media", l.756-765).
+//! The `webrtc` transport: a datagram framer holding ICE, SRTP and SCTP.
 //!
 //! WebRTC mirrors HTTPS layering. The datagram port is the host's (the connector's, no carrier
 //! plugin); DTLS runs in the host's secure layer with the host certificate, demultiplexing the port
@@ -27,7 +26,7 @@ pub mod framing;
 pub mod shim;
 pub mod stun;
 
-/// THE TRANSPORT AXIS ENTRY: the row's key, the layers it declares and its door.
+/// The transport axis entry: the row's key, the layers it declares and its door.
 pub mod linked {
     pub use crate::door::{door, KEY, MACRO_DOOR};
     /// The layers this wire declares it can be built over: none (the datagram port is the host's).

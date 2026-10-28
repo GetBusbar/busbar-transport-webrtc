@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FRAMER'S CRYPTO PROVIDER: every primitive the media stack asks for, on ring, with one
-//! exception (THE DESIGN l.759-761):
+//! The framer's crypto provider: every primitive the media stack asks for, on ring, with one
+//! exception:
 //!
 //! * SRTP is AEAD-AES-GCM only (RFC 7714), 128- and 256-bit, on `ring::aead`. The AES_CM profile's
 //!   factory hands out a cipher that refuses every packet: `AES_CM` is refused here as it is at the
@@ -27,7 +27,7 @@ use str0m::crypto::{
 use zeroize::{Zeroize as _, Zeroizing};
 
 /// The provider. It holds nothing: every reference to it is a promoted constant, never a `static`
-/// (THE DESIGN §2: "A plugin holds no process-global state").
+/// (a plugin holds no process-global state).
 #[derive(Debug)]
 pub struct Ring;
 
@@ -48,8 +48,6 @@ fn refused(why: &str) -> CryptoError {
 
 /// The refusal an `AES_CM` packet meets.
 pub const AES_CM_REFUSED: &str = "SRTP AES_CM is refused: AEAD-AES-GCM only";
-
-// ── SRTP ─────────────────────────────────────────────────────────────────────────────────────────
 
 impl SrtpProvider for Ring {
     fn aes_128_cm_sha1_80(&self) -> &'static dyn SupportedAes128CmSha1_80 {
@@ -125,8 +123,7 @@ impl Drop for Gcm {
     /// ring holds the AES key schedule (its first round key is the SRTP session key) and the GHASH
     /// key in this value and offers no zeroising: the value is overwritten in place with the
     /// schedule of the all-zero key of the same algorithm (the same layout), and the store is kept
-    /// from being elided before the memory goes back to the allocator (THE DESIGN §5, "Datagram
-    /// media": "keys are zeroised").
+    /// from being elided before the memory goes back to the allocator (keys are zeroised).
     fn drop(&mut self) {
         let alg = self.key.algorithm();
         let zero = [0_u8; 32];
@@ -173,8 +170,8 @@ impl Gcm {
     }
 
     /// `input = ciphertext || tag`; the plaintext into `output`, its length answered. Opened in
-    /// place in `output` with the AAD gathered on the stack: no allocation per packet (THE DESIGN
-    /// §11.2). A packet that fails authentication leaves `output` zeroed.
+    /// place in `output` with the AAD gathered on the stack: no allocation per packet.
+    /// A packet that fails authentication leaves `output` zeroed.
     fn open(
         &self,
         iv: &[u8; 12],
@@ -340,8 +337,6 @@ impl SupportedAeadAes256Gcm for Ring {
         }
     }
 }
-
-// ── STUN integrity, fingerprints ─────────────────────────────────────────────────────────────────
 
 impl Sha1HmacProvider for Ring {
     fn sha1_hmac(&self, key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
