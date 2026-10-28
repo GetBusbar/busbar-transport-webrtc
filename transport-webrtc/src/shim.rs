@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST SHIM: what the media stack sees in place of its own DTLS (THE DESIGN §5, "Datagram
-//! media": DTLS runs in the host's secure layer; the framer holds no DTLS state).
+//! The host shim: what the media stack sees in place of its own DTLS (DTLS runs in the host's
+//! secure layer; the framer holds no DTLS state).
 //!
 //! It runs no handshake, parses no record and holds no DTLS key. It only RELAYS what the host's
 //! secure layer reported through the datagram lane:
@@ -15,8 +15,8 @@
 //! secured lane, which the host seals. Before the host's "connected", nothing is taken for sealing
 //! (the media stack retries: `DtlsImplError::HandshakePending`).
 //!
-//! THE RELAY RUNS IN-BAND, through the media stack itself, so nothing outside one association's
-//! `Rtc` holds any of it (THE DESIGN §2: "A plugin holds no process-global state"). The stack
+//! The relay runs in-band, through the media stack itself, so nothing outside one association's
+//! `Rtc` holds any of it (a plugin holds no process-global state). The stack
 //! builds its handshake slot itself ([`Host::new_dtls`], a fresh [`Shim`] per association, owned by
 //! that association's stack) and hands that slot every datagram in the RFC 7983 range 20..=63. The
 //! framer speaks to its shim with such datagrams of its own ([`keying_frame`], [`CONNECTED_FRAME`],
@@ -90,8 +90,6 @@ pub fn present(config: RtcConfig, certificate: &[u8]) -> RtcConfig {
         })
         .set_fingerprint_verification(false)
 }
-
-// ── the in-band relay ───────────────────────────────────────────────────────────────────────────
 
 /// Framer to shim: `[KEYING, profile code, material...]`.
 const KEYING: u8 = 20;

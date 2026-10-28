@@ -52,8 +52,6 @@ use busbar_contract::abi::transport::{
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE};
 
-// ── the statement ────────────────────────────────────────────────────────────────────────────────
-
 /// The claim this entry answers for.
 pub const KEY: &str = "webrtc";
 
@@ -87,8 +85,6 @@ pub const STATEMENT: Statement = Statement {
     claims_len: CLAIM_NAMES.len(),
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
 };
-
-// ── the instance ─────────────────────────────────────────────────────────────────────────────────
 
 /// One association's framing and the host clock it is read against.
 struct Held1 {
@@ -392,8 +388,6 @@ fn with(
     Outcome::Ready
 }
 
-// ── the carrier ops: refused ─────────────────────────────────────────────────────────────────────
-
 /// A carrier op: REFUSED. The port is the host's.
 pub struct NotACarrier<I, O>(PhantomData<(I, O)>);
 
@@ -433,8 +427,6 @@ impl<I: AbiIn + Why> SafeSlot for Unused<I> {
         o.fail(Refusal::failed(I::WHY))
     }
 }
-
-// ── the framer ───────────────────────────────────────────────────────────────────────────────────
 
 /// `locate`: REFUSED. An association's far end comes from its description, judged by the host.
 pub struct Locate;
