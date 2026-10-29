@@ -170,6 +170,8 @@ fn begin(p: &Plugin<Transport>, side: u32, lane: bool) -> (String, u64) {
     let l = host.lane(0);
     let mut i: BeginIn = conf::input();
     i.side = side;
+    // A datagram lane rides the connector's DTLS, as the host's datagram `begin` states it.
+    i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
     i.facts = &facts;
     i.sink = host.sink();
     if side == SIDE_DIAL {

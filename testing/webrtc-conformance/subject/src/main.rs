@@ -60,8 +60,10 @@ enum Break {
 fn door() -> Arc<dyn FramerDoor> {
     use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
     let key = busbar_transport_webrtc::linked::KEY;
+    let bind = doors::row_bind(key)
+        .unwrap_or_else(|e| panic!("webrtc-conformance-subject: the `{key}` row has no bind: {e}"));
     let plugin = LinkedRow::of(busbar_transport_webrtc::door::door)
-        .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
+        .and_then(|row| load_linked::<TransportKind>(&row, bind))
         .unwrap_or_else(|e| panic!("webrtc-conformance-subject: the `{key}` door is refused: {e}"));
     Arc::new(
         doors::Dispatched::open(
