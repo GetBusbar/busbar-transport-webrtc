@@ -453,10 +453,10 @@ busbar_contract::not_served! {
 }
 
 /// A framer op this framer has no use for: FAILED with its reason.
-pub struct Unused<I>(PhantomData<I>);
+pub(crate) struct Unused<I>(PhantomData<I>);
 
 /// Why each unused op is refused.
-pub trait Why {
+pub(crate) trait Why {
     /// The reason.
     const WHY: &'static str;
 }
@@ -481,7 +481,7 @@ impl<I: AbiIn + Why> SafeSlot for Unused<I> {
 }
 
 /// `locate`: FAILED. An association's far end comes from its description, judged by the host.
-pub struct Locate;
+pub(crate) struct Locate;
 impl SafeSlot for Locate {
     type In = LocateIn;
     type Out = LocateOut;
@@ -529,7 +529,7 @@ fn certificate<'a>(i: &Lent<'a, BeginIn>) -> Option<&'a [u8]> {
 }
 
 /// `begin`: an accepting framing waits for the offer; a dialling one yields its offer now.
-pub struct Begin;
+pub(crate) struct Begin;
 impl SafeSlot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
@@ -592,7 +592,7 @@ impl SafeSlot for Begin {
 }
 
 /// `ingest`: one datagram, or the far end's description.
-pub struct Ingest;
+pub(crate) struct Ingest;
 impl SafeSlot for Ingest {
     type In = IngestIn;
     type Out = FramerOut;
@@ -642,7 +642,7 @@ impl SafeSlot for Ingest {
 }
 
 /// `emit`: a message's pieces, gathered; its last piece sends it.
-pub struct Emit;
+pub(crate) struct Emit;
 impl SafeSlot for Emit {
     type In = EmitIn;
     type Out = FramerOut;
@@ -723,7 +723,7 @@ fn emit(
 }
 
 /// `timer`: the deadline the framing asked for passed.
-pub struct Timer;
+pub(crate) struct Timer;
 impl SafeSlot for Timer {
     type In = FramingIn;
     type Out = FramerOut;
@@ -748,7 +748,7 @@ impl SafeSlot for Timer {
 }
 
 /// `detach`: FAILED (an association is never handed to another framer).
-pub struct Detach;
+pub(crate) struct Detach;
 impl SafeSlot for Detach {
     type In = FramingIn;
     type Out = FramerOut;
@@ -761,7 +761,7 @@ impl SafeSlot for Detach {
 }
 
 /// `finish`: the association closes, its last datagrams answered; the framing is forgotten.
-pub struct Finish;
+pub(crate) struct Finish;
 impl SafeSlot for Finish {
     type In = FinishIn;
     type Out = FramerOut;
