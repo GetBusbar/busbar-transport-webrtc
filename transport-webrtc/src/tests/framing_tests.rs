@@ -638,3 +638,66 @@ fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
     );
     assert_eq!(dial.f.failure(), None, "the association carries on");
 }
+
+/// A CHANNEL THE FAR END CLOSED TAKES NO MORE MESSAGES (codeaudit W6): its stream ended with its
+/// END piece, so a later emit there is refused in words rather than held forever, and nothing of
+/// the stream (no failure piece) follows its end. RED before the fix: the message was taken and
+/// held unsent, and the held queue's cap later failed the ended stream.
+#[test]
+fn a_channel_the_far_end_closed_takes_no_more_messages() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let (&id, &stream) = dial.f.channels.iter().next().expect("the offered channel");
+    dial.f.event(Event::ChannelClose(id));
+    assert_eq!(
+        dial.f.emit(stream, b"late", false, now),
+        Err(format!("no stream {stream} on this association"))
+    );
+    assert!(dial.f.held(stream).is_empty(), "nothing is held for it");
+    dial.f.fail_stream(stream, "too late");
+    dial.collect();
+    let ours: Vec<&Piece> = dial.pieces.iter().filter(|p| p.stream == stream).collect();
+    assert_eq!(ours.len(), 1, "the END piece alone: {ours:?}");
+    assert!(ours[0].end);
+}
+
+/// A CLOSED CHANNEL AND A RE-POINTED PATH LEAVE NOTHING BEHIND (codeaudit W12): a far end that
+/// opens and closes channels, or roams across addresses, grows no bookkeeping for the life of the
+/// association. RED before the fix: every closed stream's entries and every stale address stayed.
+#[test]
+fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
+    let now = Instant::now();
+    let two = Opening {
+        channels: vec!["a".into(), "b".into()],
+        audio: false,
+    };
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &two, now);
+    let ids: Vec<(str0m::channel::ChannelId, u64)> =
+        dial.f.channels.iter().map(|(i, s)| (*i, *s)).collect();
+    // One stream fails before its channel closes; the other just closes.
+    dial.f.fail_stream(ids[0].1, "refused");
+    for (id, _) in &ids {
+        dial.f.event(Event::ChannelClose(*id));
+    }
+    for (id, s) in &ids {
+        assert!(!dial.f.channels.contains_key(id), "channel {s} forgotten");
+        assert!(!dial.f.channel_by_stream.contains_key(s), "stream {s} forgotten");
+        assert!(!dial.f.failed_sids.contains(s), "failure of {s} forgotten");
+    }
+    let addr = |s: &str| s.parse::<SocketAddr>().expect("an address");
+    dial.f.paths([(7, addr("192.0.2.1:1000"))]);
+    dial.f.paths([(7, addr("192.0.2.2:1000"))]);
+    let junk = [0x80, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1];
+    dial.f
+        .datagram(8, addr("192.0.2.3:1000"), Lane::Clear, &junk, now);
+    dial.f
+        .datagram(8, addr("192.0.2.4:1000"), Lane::Clear, &junk, now);
+    assert_eq!(
+        dial.f.addrs.len(),
+        2,
+        "only the addresses paths now point at: {:?}",
+        dial.f.addrs
+    );
+    assert_eq!(dial.f.addrs.get(&addr("192.0.2.2:1000")), Some(&7));
+    assert_eq!(dial.f.addrs.get(&addr("192.0.2.4:1000")), Some(&8));
+}
