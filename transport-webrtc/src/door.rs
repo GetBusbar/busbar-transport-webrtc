@@ -161,8 +161,15 @@ impl Framings {
     }
 }
 
+/// The association's lock. A panic that unwound while an op held it left the state torn: the
+/// association is forgotten (its slot emptied, the poison cleared), never served torn.
 fn hold(slot: &Mutex<Option<Held1>>) -> MutexGuard<'_, Option<Held1>> {
-    slot.lock().unwrap_or_else(PoisonError::into_inner)
+    slot.lock().unwrap_or_else(|torn| {
+        let mut held = torn.into_inner();
+        *held = None;
+        slot.clear_poison();
+        held
+    })
 }
 
 fn framings<'a>(i: &Instance<'a, State>) -> Result<&'a Framings, Refusal> {
@@ -377,8 +384,15 @@ fn with(
     let Some(slot) = s.slot(token) else {
         return o.fail(Refusal::failed("no such framing"));
     };
+    let torn = slot.is_poisoned();
     let mut held = hold(&slot);
     let Some(h) = held.as_mut() else {
+        if torn {
+            s.lock().remove(&token);
+            return o.fail(Refusal::failed(
+                "the association's state was torn by a panic: it is forgotten",
+            ));
+        }
         return o.fail(Refusal::failed("no such framing"));
     };
     let now_ns = sink.now_monotonic_ns;
