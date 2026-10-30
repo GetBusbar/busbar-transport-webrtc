@@ -22,7 +22,7 @@ fn piece(bytes: &[u8], fields: bool, text: bool, end: bool) -> Piece {
 #[test]
 fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
     let end = piece(b"", false, false, true);
-    let flags = piece_flags(&end, false, true, 0);
+    let flags = piece_flags(&end, false, true);
     assert_eq!(flags, PIECE_END | PIECE_END_OF_FRAME);
     assert_eq!(
         flags & (PIECE_TEXT | PIECE_FIELDS | PIECE_CONTINUED | PIECE_STREAM_FAILED),
@@ -30,13 +30,13 @@ fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
     );
     // An empty binary message is a frame, and it does not end the stream.
     let empty = piece(b"", false, false, false);
-    assert_eq!(piece_flags(&empty, false, true, 0), PIECE_END_OF_FRAME);
+    assert_eq!(piece_flags(&empty, false, true), PIECE_END_OF_FRAME);
     // An empty text message is a frame too, and text (the contract: PIECE_TEXT rides "an EMPTY text
     // message's one piece too"; codeaudit W2), never the end. RED before the fix: the bit was
     // dropped because the piece carried no bytes, so the host read an empty BINARY message.
     let empty_text = piece(b"", false, true, false);
     assert_eq!(
-        piece_flags(&empty_text, false, true, 0),
+        piece_flags(&empty_text, false, true),
         PIECE_TEXT | PIECE_END_OF_FRAME
     );
 }
@@ -75,17 +75,17 @@ fn a_setting_the_framer_does_not_read_is_refused() {
 fn messages_and_field_blocks_keep_their_bits() {
     let text = piece(b"{\"type\":\"hello\"}", false, true, false);
     assert_eq!(
-        piece_flags(&text, false, true, text.bytes.len()),
+        piece_flags(&text, false, true),
         PIECE_TEXT | PIECE_END_OF_FRAME
     );
-    assert_eq!(piece_flags(&text, false, false, 4), PIECE_TEXT);
+    assert_eq!(piece_flags(&text, false, false), PIECE_TEXT);
     let head = piece(b"label: events\r\n", true, false, false);
     assert_eq!(
-        piece_flags(&head, false, true, head.bytes.len()),
+        piece_flags(&head, false, true),
         PIECE_FIELDS | PIECE_END_OF_FRAME
     );
     assert_eq!(
-        piece_flags(&head, true, true, head.bytes.len()),
+        piece_flags(&head, true, true),
         PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME
     );
 }
