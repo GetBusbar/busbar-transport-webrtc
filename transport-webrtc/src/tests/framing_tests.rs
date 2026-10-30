@@ -616,3 +616,25 @@ fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
         b"the far end's channel label holds a line break".to_vec()
     );
 }
+
+/// AN EMPTY MESSAGE IS NEVER DROPPED SILENTLY, AND NEVER WEDGES ITS CHANNEL (codeaudit W3). The
+/// media stack cannot send one: its SCTP writes no chunk for an empty message yet spends the
+/// ordered stream's next sequence number, so every later message on that channel waits forever
+/// for the one never sent (measured: after an empty write, "after" never arrived). The channel
+/// cannot carry the message, so its stream fails, alone, in words, and the association carries on.
+/// RED before the fix: the write was taken, nothing was said, and the channel was stuck.
+#[test]
+fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
+    let (mut dial, mut accept, mut now) = connected();
+    dial.f.emit(1, b"", true, now).expect("taken");
+    run(&mut dial, &mut accept, &mut now, 500);
+    assert!(dial.f.stream_failed(1), "the channel that cannot carry it fails");
+    assert!(
+        dial.pieces.iter().any(|p| p.stream == 1
+            && p.failed
+            && p.bytes == b"an empty message, which the media stack cannot send"),
+        "with its failure piece, in words: {:?}",
+        dial.pieces
+    );
+    assert_eq!(dial.f.failure(), None, "the association carries on");
+}
