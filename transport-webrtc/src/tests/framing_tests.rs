@@ -701,3 +701,31 @@ fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
     assert_eq!(dial.f.addrs.get(&addr("192.0.2.2:1000")), Some(&7));
     assert_eq!(dial.f.addrs.get(&addr("192.0.2.4:1000")), Some(&8));
 }
+
+/// A FORGED BINDING SUCCESS NOMINATES NOTHING (codeaudit W8; RFC 8489 §14.5, RFC 8445 §7.2.5.2:
+/// a response counts only if its MESSAGE-INTEGRITY verifies). An on-path observer who saw a
+/// nominating check's transaction id answers it from a new path with no valid integrity: the
+/// dialling end asks for no path. (`connected()` proves a genuine answer still nominates: the
+/// dialling end's bound path is its own nomination.) RED before the fix: the transaction id alone
+/// counted, and the forged answer asked to move the association.
+#[test]
+fn a_forged_binding_success_nominates_nothing() {
+    let (mut dial, _accept, now) = connected();
+    dial.requests.clear();
+    let other: SocketAddr = "192.0.2.77:6000".parse().expect("an address");
+    let p2 = dial.path(other);
+    dial.f.paths([(p2, other)]);
+    let txid = [7_u8; 12];
+    dial.f.track(txid, p2);
+    let mut forged = vec![0x01, 0x01, 0, 24, 0x21, 0x12, 0xA4, 0x42];
+    forged.extend_from_slice(&txid);
+    forged.extend_from_slice(&[0, 8, 0, 20]);
+    forged.extend_from_slice(&[0_u8; 20]);
+    dial.f.datagram(p2, other, Lane::Clear, &forged, now);
+    dial.collect();
+    assert!(
+        dial.requests.is_empty(),
+        "a forged answer asks for no path: {:?}",
+        dial.requests
+    );
+}
