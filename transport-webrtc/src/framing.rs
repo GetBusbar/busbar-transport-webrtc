@@ -1224,6 +1224,16 @@ impl Framing {
         self.nominated
     }
 
+    /// The messages held for `stream`, `(text, bytes)` each, in order: what a test reads of the
+    /// queue.
+    #[cfg(test)]
+    pub(crate) fn held(&self, stream: u64) -> Vec<(bool, Vec<u8>)> {
+        self.held
+            .get(&stream)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
     #[must_use]
     pub fn holds_keying(&self) -> bool {

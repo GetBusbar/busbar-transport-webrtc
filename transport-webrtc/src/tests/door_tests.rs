@@ -118,3 +118,44 @@ fn an_empty_message_from_the_host_reaches_the_framing() {
     assert_eq!(emit(&mut h, 1, b"", true, true, now), Ok(0));
     assert!(h.f.stream_failed(1), "the empty message was not dropped silently");
 }
+
+/// EMIT_TEXT IS READ ON THE CALL THAT COMPLETES THE FRAME (the contract's `EmitIn::flags`;
+/// codeaudit door.rs:651): an earlier piece's flag says nothing. RED before the fix: the bit was
+/// OR-ed across every piece, so a message the completing call called binary went as text.
+#[test]
+fn the_text_bit_is_the_completing_calls() {
+    let mut h = held1();
+    let now = h.base;
+    assert_eq!(emit(&mut h, 1, b"ab", false, true, now), Ok(0));
+    assert_eq!(emit(&mut h, 1, b"cd", true, false, now), Ok(0));
+    assert_eq!(emit(&mut h, 1, b"ef", false, false, now), Ok(0));
+    assert_eq!(emit(&mut h, 1, b"gh", true, true, now), Ok(0));
+    assert_eq!(
+        h.f.held(1),
+        [(false, b"abcd".to_vec()), (true, b"efgh".to_vec())],
+        "each message is what its completing call said"
+    );
+}
+
+/// A MESSAGE IS GATHERED ONLY FOR A STREAM THAT CAN TAKE IT (codeaudit W13): a stream the framing
+/// does not carry is refused at the message's FIRST piece, not after up to `MAX_MESSAGE` of it was
+/// held; a stream that failed mid-message lets go of what was gathered. RED before the fix: both
+/// were held until the last piece (or the association's end).
+#[test]
+fn nothing_is_gathered_for_a_stream_that_cannot_take_it() {
+    let mut h = held1();
+    let now = h.base;
+    assert_eq!(
+        emit(&mut h, 99, b"part", false, false, now),
+        Err("no stream 99 on this association".to_string())
+    );
+    assert!(h.gathering.is_empty(), "nothing gathered for stream 99");
+
+    assert_eq!(emit(&mut h, 1, b"part", false, false, now), Ok(0));
+    h.f.fail_stream(1, "the channel refused the message");
+    assert_eq!(emit(&mut h, 1, b"more", false, false, now), Ok(0));
+    assert!(
+        h.gathering.is_empty(),
+        "a failed stream's gathered bytes are let go"
+    );
+}
