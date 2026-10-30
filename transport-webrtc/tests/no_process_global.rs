@@ -102,6 +102,12 @@ fn red_arm_every_form_is_refused() {
         "pub(crate) static mut N: u8 = 0;",
         "static ONCE: OnceLock<u8> = OnceLock::new();",
         "let x: LazyLock<u8> = LazyLock::new(|| 1);",
+        // Any visibility, and an attribute on the same line (codeaudit tests
+        // no_process_global.rs:41).
+        "pub(super) static CACHE: Mutex<u8> = Mutex::new(0);",
+        "pub(in crate::framing) static X: u8 = 0;",
+        "#[used] static KEEP: u8 = 0;",
+        "#[allow(dead_code)] #[cfg(all(unix, test))] pub(crate) static Y: u8 = 0;",
     ] {
         assert!(!findings("src/x.rs", line).is_empty(), "{line}");
     }
