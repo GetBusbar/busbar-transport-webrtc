@@ -817,7 +817,8 @@ impl Framing {
     /// Stream `stream` fails, alone: its held messages are dropped and the layer above gets its
     /// failure piece, once. The association and every other stream carry on.
     pub fn fail_stream(&mut self, stream: u64, why: &str) {
-        if !self.failed_sids.insert(stream) {
+        // A stream this framing no longer carries ended already: nothing of it follows its end.
+        if !self.carries(stream) || !self.failed_sids.insert(stream) {
             return;
         }
         self.held.remove(&stream);
@@ -1095,7 +1096,10 @@ impl Framing {
                 if !(self.verified && self.keyed) {
                     return;
                 }
-                let s = self.channel_stream(d.id);
+                // A channel that closed (or never opened) carries nothing up.
+                let Some(s) = self.channels.get(&d.id).copied() else {
+                    return;
+                };
                 if self.failed_sids.contains(&s) {
                     return;
                 }
@@ -1119,13 +1123,16 @@ impl Framing {
                 });
             }
             Event::ChannelClose(id) => {
-                if let Some(s) = self.channels.get(&id).copied() {
+                // The stream ends: the framing carries it no more, so a later emit there is refused
+                // and nothing of it follows its end.
+                if let Some(s) = self.channels.remove(&id) {
+                    self.channel_by_stream.remove(&s);
+                    self.held.remove(&s);
+                    self.full.remove(&s);
                     if self.failed_sids.contains(&s) {
                         // A failed stream already ended, failed.
                         return;
                     }
-                    self.held.remove(&s);
-                    self.full.remove(&s);
                     self.pieces.push_back(Piece {
                         stream: s,
                         bytes: Vec::new(),
