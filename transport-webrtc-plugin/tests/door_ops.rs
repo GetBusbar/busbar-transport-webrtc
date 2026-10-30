@@ -12,7 +12,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FramePiece,
     FramerOut, FramerSink, FramingIn, IngestIn, LANE_RENDEZVOUS, PIECE_END_OF_FRAME,
-    PIECE_STREAM_FAILED, SIDE_DIAL, YIELD_MORE,
+    PIECE_CONTINUED, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_DIAL, YIELD_MORE,
 };
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{Frame, Plugin};
@@ -177,6 +177,12 @@ fn go<I: busbar_plugin_loader::dispatch::InFrame>(
 
 /// `begin` dialling, offering `channels` (one `channel` field each).
 fn begin(p: &Plugin<Transport>, host: &mut Host, channels: &[&[u8]]) -> Answer {
+    let fields: Vec<(&[u8], &[u8])> = channels.iter().map(|c| (&b"channel"[..], *c)).collect();
+    begin_with(p, host, &fields)
+}
+
+/// `begin` dialling, with these opening fields, `(name, value)` each.
+fn begin_with(p: &Plugin<Transport>, host: &mut Host, opening: &[(&[u8], &[u8])]) -> Answer {
     let facts = ConnFacts {
         size: std::mem::size_of::<ConnFacts>() as u32,
         _reserved: 0,
@@ -188,11 +194,11 @@ fn begin(p: &Plugin<Transport>, host: &mut Host, channels: &[&[u8]]) -> Answer {
         claim: AbiStr::ABSENT,
         local_certificate: AbiStr::of_bytes(CERT),
     };
-    let fields: Vec<Field> = channels
+    let fields: Vec<Field> = opening
         .iter()
-        .map(|c| Field {
-            name: AbiStr::of_bytes(b"channel"),
-            value: AbiStr::over(c),
+        .map(|(n, v)| Field {
+            name: AbiStr::over(n),
+            value: AbiStr::over(v),
         })
         .collect();
     let l = host.lane(0);
@@ -384,4 +390,46 @@ fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
             "frame cap {cap}: the reason, whole"
         );
     }
+}
+
+/// WHAT DOES NOT FIT ONE ANSWER CONTINUES IN THE NEXT, ONCE (codeaudit tests door.rs:651): over a
+/// frame buffer of 10 bytes, the dialled offer comes in pieces that reassemble to a description
+/// the far end accepts, each piece text and only the last ending the frame; the audio line's
+/// head comes as a field block whose first piece starts a line and every later one continues it.
+#[test]
+fn what_does_not_fit_one_answer_continues_in_the_next() {
+    let p = door();
+    let mut host = Host::new(4096, 10);
+    let mut answers = vec![begin_with(
+        &p,
+        &mut host,
+        &[(b"channel", b"events"), (b"media", b"audio")],
+    )];
+    let token = answers[0].framing;
+    while answers.last().is_some_and(|a| a.flags & YIELD_MORE != 0) {
+        assert!(answers.len() < 1000, "no progress");
+        answers.push(timer(&p, &mut host, token));
+    }
+    let pieces: Vec<&(u64, u16, Vec<u8>)> = answers.iter().flat_map(|a| a.pieces.iter()).collect();
+    let of = |stream: u64| -> Vec<&(u64, u16, Vec<u8>)> {
+        pieces.iter().copied().filter(|x| x.0 == stream).collect()
+    };
+    let offer = of(DESCRIPTION);
+    let (last, rest) = offer.split_last().expect("the offer");
+    assert!(rest.iter().all(|x| x.1 == PIECE_TEXT), "{rest:?}");
+    assert_eq!(last.1, PIECE_TEXT | PIECE_END_OF_FRAME);
+    let whole: Vec<u8> = offer.iter().flat_map(|x| x.2.clone()).collect();
+    let now = Instant::now();
+    let mut far = Framing::begin(Side::Accept, CERT, FAR.parse().ok(), &Opening::default(), now)
+        .expect("begins");
+    far.rendezvous(&whole, now)
+        .expect("the reassembled offer is the description");
+    let head = of(1 << 32);
+    let (first, later) = head.split_first().expect("the audio line's head");
+    assert_eq!(first.1, PIECE_FIELDS, "the first piece starts the block");
+    let (end, middle) = later.split_last().expect("split");
+    assert!(middle.iter().all(|x| x.1 == PIECE_FIELDS | PIECE_CONTINUED));
+    assert_eq!(end.1, PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME);
+    let block: Vec<u8> = head.iter().flat_map(|x| x.2.clone()).collect();
+    assert_eq!(block, b"kind: audio\r\ncodec: opus\r\n".to_vec());
 }
