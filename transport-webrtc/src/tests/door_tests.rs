@@ -89,3 +89,32 @@ fn messages_and_field_blocks_keep_their_bits() {
         PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME
     );
 }
+
+/// One association's state over a dialling framing that offers channel `events` (stream 1), not
+/// yet open: what the host emits on it is held.
+fn held1() -> Held1 {
+    let now = Instant::now();
+    let opening = Opening {
+        channels: vec!["events".into()],
+        audio: false,
+    };
+    let local = "198.51.100.1:40000".parse().ok();
+    Held1 {
+        f: Framing::begin(Side::Dial, b"cert", local, &opening, now).expect("begins"),
+        base_ns: 1,
+        base: now,
+        gathering: HashMap::new(),
+        partial: None,
+    }
+}
+
+/// AN EMPTY MESSAGE THE HOST EMITS IS NEVER DROPPED SILENTLY (codeaudit W3): the door hands it to
+/// the framing, whose channel cannot carry it and fails, in words. RED before the fix: the door
+/// answered READY and nothing more.
+#[test]
+fn an_empty_message_from_the_host_reaches_the_framing() {
+    let mut h = held1();
+    let now = h.base;
+    assert_eq!(emit(&mut h, 1, b"", true, true, now), Ok(0));
+    assert!(h.f.stream_failed(1), "the empty message was not dropped silently");
+}
