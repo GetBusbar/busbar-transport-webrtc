@@ -165,12 +165,20 @@ impl Framings {
 /// The association's lock. A panic that unwound while an op held it left the state torn: the
 /// association is forgotten (its slot emptied, the poison cleared), never served torn.
 fn hold(slot: &Mutex<Option<Held1>>) -> MutexGuard<'_, Option<Held1>> {
-    slot.lock().unwrap_or_else(|torn| {
-        let mut held = torn.into_inner();
-        *held = None;
-        slot.clear_poison();
-        held
-    })
+    hold_torn(slot).0
+}
+
+/// [`hold`], and whether this call found the lock poisoned (so the emptied slot is a torn one).
+fn hold_torn(slot: &Mutex<Option<Held1>>) -> (MutexGuard<'_, Option<Held1>>, bool) {
+    match slot.lock() {
+        Ok(held) => (held, false),
+        Err(torn) => {
+            let mut held = torn.into_inner();
+            *held = None;
+            slot.clear_poison();
+            (held, true)
+        }
+    }
 }
 
 fn framings<'a>(i: &Instance<'a, State>) -> Result<&'a Framings, Refusal> {
@@ -396,8 +404,7 @@ fn with(
     let Some(slot) = s.slot(token) else {
         return o.fail(Refusal::failed("no such framing"));
     };
-    let torn = slot.is_poisoned();
-    let mut held = hold(&slot);
+    let (mut held, torn) = hold_torn(&slot);
     let Some(h) = held.as_mut() else {
         if torn {
             s.lock().remove(&token);
@@ -685,15 +692,16 @@ fn emit(
     if bytes.is_empty() && !end {
         return Ok(full(h));
     }
-    // A stream the framing does not carry is refused at a message's first piece, never gathered.
+    // A failed or ended stream's host was told: what it still emits there (racing the far end's
+    // close, say), and what was gathered, goes.
+    if h.f.stream_failed(stream) || h.f.stream_ended(stream) {
+        h.gathering.remove(&stream);
+        return Ok(full(h));
+    }
+    // A stream the framing never carried is refused at a message's first piece, never gathered.
     if !h.f.carries(stream) {
         h.gathering.remove(&stream);
         return Err(format!("no stream {stream} on this association"));
-    }
-    // A failed stream's host was told: what it still emits there, and what was gathered, goes.
-    if h.f.stream_failed(stream) {
-        h.gathering.remove(&stream);
-        return Ok(full(h));
     }
     let gathered = h.gathering.get(&stream).map_or(0, Vec::len);
     if gathered + bytes.len() > MAX_MESSAGE {

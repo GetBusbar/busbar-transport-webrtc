@@ -679,20 +679,23 @@ fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
 }
 
 /// A CHANNEL THE FAR END CLOSED TAKES NO MORE MESSAGES (codeaudit W6): its stream ended with its
-/// END piece, so a later emit there is refused in words rather than held forever, and nothing of
-/// the stream (no failure piece) follows its end. RED before the fix: the message was taken and
-/// held unsent, and the held queue's cap later failed the ended stream.
+/// END piece, so a later emit there (racing the close) is dropped as for a failed stream, never
+/// held forever and never failing the association, and nothing of the stream (no failure piece)
+/// follows its end. A stream never carried is still refused. RED before the fix: the message was
+/// taken and held unsent, and the held queue's cap later failed the ended stream.
 #[test]
 fn a_channel_the_far_end_closed_takes_no_more_messages() {
     let now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
     let (&id, &stream) = dial.f.channels.iter().next().expect("the offered channel");
     dial.f.event(Event::ChannelClose(id));
-    assert_eq!(
-        dial.f.emit(stream, b"late", false, now),
-        Err(format!("no stream {stream} on this association"))
-    );
+    assert_eq!(dial.f.emit(stream, b"late", false, now), Ok(()));
     assert!(dial.f.held(stream).is_empty(), "nothing is held for it");
+    assert_eq!(dial.f.failure(), None, "the association carries on");
+    assert_eq!(
+        dial.f.emit(99, b"never", false, now),
+        Err("no stream 99 on this association".to_string())
+    );
     dial.f.fail_stream(stream, "too late");
     dial.collect();
     let ours: Vec<&Piece> = dial.pieces.iter().filter(|p| p.stream == stream).collect();
