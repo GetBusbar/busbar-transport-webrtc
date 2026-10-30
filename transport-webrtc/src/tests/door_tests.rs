@@ -207,3 +207,14 @@ fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
     assert!(h.f.stream_failed(1), "past the cap, the stream fails");
     assert!(h.gathering.is_empty(), "and nothing of it is kept");
 }
+
+/// THE TAIL STATES EXACTLY THE OPS THIS DOOR SERVES (sibling alignment D1, ruling R1: every framer
+/// states its ops): `begin` on the accepting side and on the dialling side. Neither detach nor
+/// adopt: an association is never handed between framers. RED before: the tail stated no op, which
+/// the contract reads as declaring none.
+#[test]
+fn the_tail_states_the_ops_the_door_serves() {
+    use busbar_contract::abi::transport::{FACT_ACCEPTS, FACT_ADOPTS, FACT_DETACHES, FACT_DIALS};
+    assert_eq!(TAIL.facts, FACT_ACCEPTS | FACT_DIALS);
+    assert_eq!(TAIL.facts & (FACT_DETACHES | FACT_ADOPTS), 0);
+}
