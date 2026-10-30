@@ -29,13 +29,14 @@ use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
+use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+use busbar_contract::abi::sdk::transport::settings_reading;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::check::check_keying;
 use busbar_contract::abi::transport::{
@@ -111,39 +112,57 @@ impl Held1 {
     }
 }
 
+/// One association behind its own lock, so one association's crypto never waits on another's:
+/// `None` once it is forgotten.
+type Slot = Arc<Mutex<Option<Held1>>>;
+
 /// The framings one instance holds.
 pub struct Framings {
-    framings: Mutex<HashMap<u64, Held1>>,
+    framings: Mutex<HashMap<u64, Slot>>,
     next: AtomicU64,
 }
 
 type State = Held<Framings>;
 
+/// This framer reads no setting: a JSON object (or empty), every key refused.
+fn no_settings(settings: &[u8]) -> Result<(), Refusal> {
+    settings_reading(settings, &[]).map(drop)
+}
+
 impl Life for Framings {
     /// No framer op pends, so a cancel finds nothing in flight.
     const CANCEL: u32 = CANCEL_NOTHING_MOVED;
 
-    /// This framer reads no setting.
-    fn validate(_: &[u8]) -> Result<(), Refusal> {
-        Ok(())
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        no_settings(settings)
     }
 
-    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+    fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        no_settings(settings)?;
         Ok(Self {
             framings: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
         })
     }
 
-    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        no_settings(settings)?;
         Ok(Refreshed::default())
     }
 }
 
 impl Framings {
-    fn lock(&self) -> MutexGuard<'_, HashMap<u64, Held1>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<u64, Slot>> {
         self.framings.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn slot(&self, token: u64) -> Option<Slot> {
+        self.lock().get(&token).cloned()
+    }
+}
+
+fn hold(slot: &Mutex<Option<Held1>>) -> MutexGuard<'_, Option<Held1>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn framings<'a>(i: &Instance<'a, State>) -> Result<&'a Framings, Refusal> {
@@ -355,8 +374,11 @@ fn with(
         Ok(s) => s,
         Err(r) => return o.fail(r),
     };
-    let mut held = s.lock();
-    let Some(h) = held.get_mut(&token) else {
+    let Some(slot) = s.slot(token) else {
+        return o.fail(Refusal::failed("no such framing"));
+    };
+    let mut held = hold(&slot);
+    let Some(h) = held.as_mut() else {
         return o.fail(Refusal::failed("no such framing"));
     };
     let now_ns = sink.now_monotonic_ns;
@@ -364,40 +386,45 @@ fn with(
     let run = match lane {
         Some(l) => host_state(h, l, now).and_then(|()| op(h, now)),
         None => op(h, now),
-    };
-    let extra = match run {
-        Ok(extra) => extra,
-        Err(why) => {
-            held.remove(&token);
-            return o.fail(Refusal::failed(why));
+    }
+    .and_then(|extra| match h.f.failure() {
+        Some(why) => Err(why.to_owned()),
+        None => answer(h, sink, lane, now_ns, o).map(|()| extra),
+    });
+    match run {
+        Ok(extra) => {
+            if extra != 0 {
+                let flags = o.get().yielded.flags;
+                o.set(|o| &o.yielded.flags, flags | extra);
+            }
+            Outcome::Ready
         }
-    };
-    if let Some(why) = h.f.failure() {
-        let why = why.to_owned();
-        held.remove(&token);
-        return o.fail(Refusal::failed(why));
+        Err(why) => {
+            *held = None;
+            s.lock().remove(&token);
+            o.fail(Refusal::failed(why))
+        }
     }
-    if let Err(why) = answer(h, sink, lane, now_ns, o) {
-        held.remove(&token);
-        return o.fail(Refusal::failed(why));
-    }
-    if extra != 0 {
-        let flags = o.get().yielded.flags;
-        o.set(|o| &o.yielded.flags, flags | extra);
-    }
-    Outcome::Ready
 }
 
-/// A carrier op: REFUSED. The port is the host's.
-pub struct NotACarrier<I, O>(PhantomData<(I, O)>);
-
-impl<I: AbiIn, O: AbiOut> SafeSlot for NotACarrier<I, O> {
-    type In = I;
-    type Out = O;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
-        Outcome::Refused
-    }
+busbar_contract::not_served! {
+    state: State, role: "webrtc framer";
+    /// `listen`: the port is the host's.
+    NoListen(ListenIn => ListenOut) "listen";
+    /// `accept`: the port is the host's.
+    NoAccept(AcceptIn => AcceptOut) "accept";
+    /// `dial`: the port is the host's.
+    NoDial(DialIn => ConnOut) "dial";
+    /// `read`: the port is the host's.
+    NoRead(ReadIn => IoOut) "read";
+    /// `write`: the port is the host's.
+    NoWrite(WriteIn => IoOut) "write";
+    /// `flush`: the port is the host's.
+    NoFlush(ConnIn => OutHead) "flush";
+    /// `shut`: the port is the host's.
+    NoShut(ShutIn => OutHead) "shut";
+    /// `arrival`: the port is the host's.
+    NoArrival(ArrivalIn => ArrivalOut) "arrival";
 }
 
 /// A framer op this framer has no use for: FAILED with its reason.
@@ -518,7 +545,7 @@ impl SafeSlot for Begin {
             return o.fail(Refusal::failed(why));
         }
         let token = s.next.fetch_add(1, Ordering::Relaxed);
-        s.lock().insert(token, h);
+        s.lock().insert(token, Arc::new(Mutex::new(Some(h))));
         o.set(|o| &o.framing, token);
         Outcome::Ready
     }
@@ -602,24 +629,31 @@ impl SafeSlot for Emit {
                 if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
                     return Ok(full(h));
                 }
-                let g = h.gathering.entry(stream).or_default();
-                if g.0.len() + bytes.len() > MAX_MESSAGE {
+                let gathered = h.gathering.get(&stream).map_or(0, |g| g.0.len());
+                if gathered + bytes.len() > MAX_MESSAGE {
                     // A message no channel could carry: its stream fails, alone, and nothing more
                     // of it is gathered.
                     h.gathering.remove(&stream);
                     h.f.fail_stream(stream, "a message larger than the channel can ever send");
                     return Ok(0);
                 }
-                g.0.extend_from_slice(bytes);
-                g.1 |= text;
                 if !end {
+                    let g = h.gathering.entry(stream).or_default();
+                    g.0.extend_from_slice(bytes);
+                    g.1 |= text;
                     return Ok(full(h));
                 }
-                let (message, text) = h.gathering.remove(&stream).unwrap_or_default();
-                if message.is_empty() {
-                    return Ok(full(h));
+                // A message in one piece is sent from the host's bytes, never gathered.
+                match h.gathering.remove(&stream) {
+                    Some((mut message, gathered_text)) => {
+                        message.extend_from_slice(bytes);
+                        if !message.is_empty() {
+                            h.f.emit(stream, &message, gathered_text || text, now)?;
+                        }
+                    }
+                    None if !bytes.is_empty() => h.f.emit(stream, bytes, text, now)?,
+                    None => {}
                 }
-                h.f.emit(stream, &message, text, now)?;
                 Ok(full(h))
             },
         )
@@ -679,11 +713,12 @@ impl SafeSlot for Finish {
             Ok(s) => s,
             Err(r) => return o.fail(r),
         };
-        let mut held = s.lock();
-        let Some(mut h) = held.remove(&i.framing) else {
+        // The map's lock is let go before the association's is taken: `with` takes them the other
+        // way round.
+        let slot = s.lock().remove(&i.framing);
+        let Some(mut h) = slot.and_then(|slot| hold(&slot).take()) else {
             return o.fail(Refusal::failed("finish: no such framing"));
         };
-        drop(held);
         let sink = i.field(|x| &x.sink);
         let now_ns = sink.now_monotonic_ns;
         let now = h.at(now_ns);
@@ -702,14 +737,14 @@ busbar_contract::plugin_door! {
     statement: STATEMENT,
     lifecycle: life(Framings),
     kind_ops: {
-        listen: Safe<NotACarrier<ListenIn, ListenOut>>,
-        accept: Safe<NotACarrier<AcceptIn, AcceptOut>>,
-        dial: Safe<NotACarrier<DialIn, ConnOut>>,
-        read: Safe<NotACarrier<ReadIn, IoOut>>,
-        write: Safe<NotACarrier<WriteIn, IoOut>>,
-        flush: Safe<NotACarrier<ConnIn, OutHead>>,
-        shut: Safe<NotACarrier<ShutIn, OutHead>>,
-        arrival: Safe<NotACarrier<ArrivalIn, ArrivalOut>>,
+        listen: Safe<NoListen>,
+        accept: Safe<NoAccept>,
+        dial: Safe<NoDial>,
+        read: Safe<NoRead>,
+        write: Safe<NoWrite>,
+        flush: Safe<NoFlush>,
+        shut: Safe<NoShut>,
+        arrival: Safe<NoArrival>,
         locate: Safe<Locate>,
         begin: Safe<Begin>,
         ingest: Safe<Ingest>,
