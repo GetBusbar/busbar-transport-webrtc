@@ -845,3 +845,233 @@ fn a_host_port_address_the_stack_refuses_refuses_the_framing() {
         }
     }
 }
+
+/// Every route `e` owes, taken and not carried.
+fn owed(e: &mut End) -> Vec<Route> {
+    std::iter::from_fn(|| e.f.next_route()).collect()
+}
+
+/// The stream whose head starts `with`, on `e`.
+fn stream_headed(e: &End, with: &[u8]) -> u64 {
+    e.pieces
+        .iter()
+        .find(|p| p.fields && p.bytes.starts_with(with))
+        .map(|p| p.stream)
+        .expect("a stream with that head")
+}
+
+/// VALID APPLICATION DATA IS NOT READ BEFORE VERIFICATION (codeaudit tests framing_tests.rs:288):
+/// a real SCTP packet and a real protected media frame of this association, arriving while the
+/// host has not verified the far end, are dropped unread; the same datagrams once it has are read.
+/// A gate that let them through would have the stack take them then, so their second arrival is a
+/// duplicate (SCTP) or a replay (SRTP) it never hands up: the red arm below fails.
+#[test]
+fn valid_application_data_is_not_read_before_verification() {
+    let (mut dial, mut accept, now) = connected();
+    let (channel, media) = (
+        stream_headed(&accept, b"label: "),
+        stream_headed(&accept, b"kind: audio"),
+    );
+    let _ = owed(&mut accept);
+    dial.f
+        .emit(1, b"before verification", true, now)
+        .expect("taken");
+    dial.f.emit(MEDIA_BASE, OPUS, false, now).expect("a frame");
+    // The stack paces media: the frame goes out on its next tick.
+    let now = now + Duration::from_millis(20);
+    dial.f.timeout(now);
+    let datagrams = owed(&mut dial);
+    assert!(datagrams.iter().any(|r| r.lane == Lane::Secured));
+    assert!(datagrams
+        .iter()
+        .any(|r| r.lane == Lane::Clear && !stun::is_stun(&r.bytes)));
+    let path = accept.path(dial.addr);
+    let before = (heard(&accept, channel).len(), heard(&accept, media).len());
+    accept.f.verified = false;
+    for r in &datagrams {
+        accept.f.datagram(path, dial.addr, r.lane, &r.bytes, now);
+    }
+    accept.collect();
+    assert_eq!(
+        (heard(&accept, channel).len(), heard(&accept, media).len()),
+        before,
+        "nothing read before verification"
+    );
+    // The red arm: verified, the very same datagrams are read.
+    accept.f.verified = true;
+    for r in &datagrams {
+        accept.f.datagram(path, dial.addr, r.lane, &r.bytes, now);
+    }
+    accept.collect();
+    assert_eq!(
+        heard(&accept, channel).last(),
+        Some(&b"before verification".to_vec())
+    );
+    assert_eq!(heard(&accept, media).last(), Some(&OPUS.to_vec()));
+}
+
+/// A REPLAYED MEDIA FRAME FROM AN UNPROVEN PATH IS NOT READ (codeaudit tests
+/// framing_tests.rs:403): a genuine protected frame of this association, arriving from a path the
+/// host has not bound, is dropped; the same frame from the bound path is read (the red arm: a
+/// frame read from the spoofed path first would be a replay there, never handed up).
+#[test]
+fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
+    let (mut dial, mut accept, now) = connected();
+    let media = stream_headed(&accept, b"kind: audio");
+    let spoof: SocketAddr = "192.0.2.66:5555".parse().expect("an address");
+    let spoof_path = accept.path(spoof);
+    dial.f.emit(MEDIA_BASE, OPUS, false, now).expect("a frame");
+    let now = now + Duration::from_millis(20);
+    dial.f.timeout(now);
+    let frames: Vec<Route> = owed(&mut dial)
+        .into_iter()
+        .filter(|r| r.lane == Lane::Clear && !stun::is_stun(&r.bytes))
+        .collect();
+    assert!(!frames.is_empty(), "a protected frame");
+    let before = heard(&accept, media).len();
+    for r in &frames {
+        accept
+            .f
+            .datagram(spoof_path, spoof, Lane::Clear, &r.bytes, now);
+    }
+    accept.collect();
+    assert_eq!(heard(&accept, media).len(), before, "not read from a spoofed path");
+    let bound = accept.bound;
+    for r in &frames {
+        accept
+            .f
+            .datagram(bound, dial.addr, Lane::Clear, &r.bytes, now);
+    }
+    accept.collect();
+    assert_eq!(heard(&accept, media).len(), before + 1, "read from the bound path");
+}
+
+/// THE FRAMER'S LINE TO ITS SHIM IS ITS OWN (codeaudit tests framing.rs:646): a far end's
+/// datagram in the relay range (keying, "connected", opened plaintext) from the bound path of a
+/// verified, keyed association is never fed. Fed, a forged keying frame would re-key the
+/// association's media under the far end's choice, and the genuine media after it would no
+/// longer be read.
+#[test]
+fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
+    let (mut dial, mut accept, mut now) = connected();
+    let media = stream_headed(&accept, b"kind: audio");
+    let bound = accept.bound;
+    let mut forged_keying = vec![20, 7];
+    forged_keying.extend_from_slice(&[0x55; 56]);
+    for d in [forged_keying, vec![21], vec![22, 0x13, 0x88, 0x13, 0x88]] {
+        accept.f.datagram(bound, dial.addr, Lane::Clear, &d, now);
+    }
+    assert_eq!(accept.f.failure(), None);
+    let before = heard(&accept, media).len();
+    for _ in 0..5 {
+        dial.f.emit(MEDIA_BASE, OPUS, false, now).expect("a frame");
+        run(&mut dial, &mut accept, &mut now, 20);
+    }
+    assert!(
+        heard(&accept, media).len() > before,
+        "the genuine media is still read: nothing re-keyed it"
+    );
+}
+
+/// "DISCONNECTED" THAT COMES BACK STARTS THE WINDOW AFRESH (codeaudit tests framing.rs:1057): a
+/// path that disconnects, comes back, and disconnects again is judged from the second outage. The
+/// clock is stamped first, so the window really starts. RED for a framing that forgot the return:
+/// it would end 5 s into the second outage.
+#[test]
+fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
+    let t0 = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), t0);
+    let s = Duration::from_secs;
+    dial.f.timeout(t0);
+    dial.f.event(Event::IceConnectionStateChange(
+        IceConnectionState::Disconnected,
+    ));
+    dial.f.timeout(t0 + s(5));
+    dial.f.event(Event::IceConnectionStateChange(
+        IceConnectionState::Connected,
+    ));
+    dial.f.timeout(t0 + s(25));
+    dial.f.event(Event::IceConnectionStateChange(
+        IceConnectionState::Disconnected,
+    ));
+    dial.f.timeout(t0 + s(31));
+    assert!(!dial.f.ended(), "5 s into the second outage it holds");
+    dial.f.timeout(t0 + s(25) + ICE_FAILED_AFTER + s(1));
+    assert!(dial.f.ended(), "past the window from the second outage it ends");
+}
+
+/// BACK-PRESSURE IS A PROTOCOL (codeaudit tests framing.rs:977): a channel whose held messages
+/// reach the high-water mark is FULL; drained to the low-water mark it is writable again, with its
+/// writable piece, once.
+#[test]
+fn a_full_channel_is_writable_again_once_drained() {
+    let (mut dial, mut accept, mut now) = connected();
+    // Two fill the stack's buffer; the rest are held behind them.
+    for m in [vec![1_u8; 60_000], vec![2_u8; 60_000]] {
+        dial.f.emit(1, &m, false, now).expect("taken");
+    }
+    for n in 0..HIGH_WATER {
+        assert!(!dial.f.stream_full(1), "full only at the mark");
+        dial.f.emit(1, &[n as u8; 20_000], false, now).expect("taken");
+    }
+    assert!(dial.f.stream_full(1), "FULL at the high-water mark");
+    run(&mut dial, &mut accept, &mut now, 3000);
+    assert!(!dial.f.stream_full(1), "writable once drained");
+    let writable = dial
+        .pieces
+        .iter()
+        .filter(|p| p.stream == 1 && p.writable)
+        .count();
+    assert_eq!(writable, 1, "one writable piece");
+}
+
+/// A CLOSED DATA CHANNEL ENDS ITS STREAM (codeaudit tests framing.rs:1106): one end closes the
+/// channel; the far end's stream ends with exactly one END piece, its last.
+#[test]
+fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
+    let (mut dial, mut accept, mut now) = connected();
+    let stream = stream_headed(&accept, b"label: ");
+    let (&id, _) = dial.f.channels.iter().next().expect("the channel");
+    dial.f.rtc.direct_api().close_data_channel(id);
+    run(&mut dial, &mut accept, &mut now, 3000);
+    let ours: Vec<&Piece> = accept.pieces.iter().filter(|p| p.stream == stream).collect();
+    assert_eq!(ours.iter().filter(|p| p.end).count(), 1, "{ours:?}");
+    assert!(ours.last().is_some_and(|p| p.end), "the END is its last piece");
+}
+
+/// THE NAMED CAPS HOLD (codeaudit tests framing.rs:991): the route queue never grows past
+/// `MAX_QUEUED`, the nominating set never past `MAX_NOMINATING`, and a message one byte past
+/// `MAX_MESSAGE` fails its channel in words while one at it is sent.
+#[test]
+fn the_route_nominating_and_message_caps_hold() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let far: SocketAddr = "203.0.113.9:3478".parse().expect("an address");
+    dial.f.paths([(1, far)]);
+    while dial.f.routes.len() < MAX_QUEUED {
+        dial.f.routes.push_back(Route {
+            bytes: vec![0],
+            path: 1,
+            lane: Lane::Clear,
+        });
+    }
+    dial.f.transmit(far, stun_message(1, 0, &[]));
+    assert_eq!(dial.f.routes.len(), MAX_QUEUED, "no route past the cap");
+    for n in 0..(3 * MAX_NOMINATING) {
+        dial.f.track([n as u8; 12], 1);
+        assert!(dial.f.nominating.len() <= MAX_NOMINATING);
+    }
+
+    let (mut dial, mut accept, mut now) = connected();
+    dial.f.emit(1, &vec![7; MAX_MESSAGE], false, now).expect("taken");
+    assert!(!dial.f.stream_failed(1), "a message at the cap is sent");
+    run(&mut dial, &mut accept, &mut now, 3000);
+    dial.f
+        .emit(1, &vec![7; MAX_MESSAGE + 1], false, now)
+        .expect("taken");
+    assert!(dial.f.stream_failed(1), "one byte past it fails the channel");
+    dial.collect();
+    assert!(dial.pieces.iter().any(|p| p.stream == 1
+        && p.failed
+        && p.bytes == b"a message larger than the channel can ever send"));
+}
