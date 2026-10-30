@@ -80,9 +80,8 @@ const MAX_CANDIDATES: usize = 32;
 /// The largest message a channel carries: the media stack's send buffer (its default), which a
 /// larger message could never enter.
 pub const MAX_MESSAGE: usize = 128 * 1024;
-/// Why an empty message fails its stream: the media stack cannot send one (its SCTP writes no
-/// chunk for it, yet spends the ordered stream's next sequence number, wedging the channel; an
-/// empty Opus frame is no packet).
+/// Why an empty channel message fails its stream: the media stack cannot send one (its SCTP writes
+/// no chunk for it, yet spends the ordered stream's next sequence number, wedging the channel).
 const EMPTY_REFUSED: &str = "an empty message, which the media stack cannot send";
 /// A channel's held messages at which its stream is FULL (the host emits nothing more on it until
 /// its writable piece) ...
@@ -772,9 +771,9 @@ impl Framing {
         now: Instant,
     ) -> Result<(), Failed> {
         if let Some(mid) = self.media_by_stream.get(&stream).copied() {
-            if bytes.is_empty() && !self.failed_sids.contains(&stream) {
-                self.fail_stream(stream, EMPTY_REFUSED);
-                self.drain(now);
+            if bytes.is_empty() {
+                // An empty frame is no Opus packet and no RTP packet carries it: real-time media
+                // is lossy, so it is dropped and the line carries on.
                 return Ok(());
             }
             if !(self.verified && self.keyed) || self.failed_sids.contains(&stream) {
@@ -805,6 +804,10 @@ impl Framing {
             return Ok(());
         }
         let Some(id) = self.channel_by_stream.get(&stream).copied() else {
+            if self.stream_ended(stream) {
+                // Its END piece told the host; an emit racing the far end's close is dropped.
+                return Ok(());
+            }
             return Err(format!("no stream {stream} on this association"));
         };
         if self.failed_sids.contains(&stream) {
@@ -883,6 +886,14 @@ impl Framing {
     #[must_use]
     pub fn stream_full(&self, stream: u64) -> bool {
         self.full.contains(&stream)
+    }
+
+    /// Whether `stream` was a data channel that has since closed (its END piece told the host):
+    /// what the host still emits there, racing the far end's close, is dropped as for a failed
+    /// stream. Channel streams are numbered in order and never reused, so no record is kept.
+    #[must_use]
+    pub fn stream_ended(&self, stream: u64) -> bool {
+        (1..self.next_channel).contains(&stream) && !self.channel_by_stream.contains_key(&stream)
     }
 
     /// Whether `stream` failed.
