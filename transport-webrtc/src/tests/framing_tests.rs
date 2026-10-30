@@ -794,3 +794,24 @@ fn a_fingerprint_octet_is_exactly_two_hex_digits() {
         );
     }
 }
+
+/// THE ONE CANDIDATE ADVERTISED IS ONE THE MEDIA STACK TAKES (codeaudit framing.rs:463/483): a
+/// host port's address the stack refuses as a host candidate (unspecified, multicast) refuses the
+/// framing in words, rather than be advertised while the stack's ICE agent holds no candidate.
+/// RED before the fix: the framing began and its description advertised `0.0.0.0`.
+#[test]
+fn a_host_port_address_the_stack_refuses_refuses_the_framing() {
+    for addr in ["0.0.0.0:3478", "[::]:3478", "224.0.0.1:3478"] {
+        let local: SocketAddr = addr.parse().expect("an address");
+        for (side, opening) in [(Side::Accept, Opening::default()), (Side::Dial, opening())] {
+            let r = Framing::begin(side, CERT, Some(local), &opening, Instant::now());
+            assert_eq!(
+                r.err(),
+                Some(format!(
+                    "the host port's address {local} is no candidate the media stack takes"
+                )),
+                "{side:?} at {addr}"
+            );
+        }
+    }
+}
