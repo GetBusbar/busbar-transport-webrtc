@@ -797,7 +797,7 @@ impl Framing {
                 pt,
                 now,
                 MediaTime::new(at, Frequency::FORTY_EIGHT_KHZ),
-                bytes.to_vec(),
+                bytes,
             ) {
                 self.fail_stream(stream, &format!("the media frame was refused: {e}"));
             }
