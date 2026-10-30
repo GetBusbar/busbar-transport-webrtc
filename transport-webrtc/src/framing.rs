@@ -358,7 +358,8 @@ impl Framing {
     ///
     /// # Errors
     ///
-    /// No randomness, or a dialling end with nothing to offer.
+    /// No randomness, a host port's address the media stack takes as no candidate, or a dialling
+    /// end with nothing to offer.
     pub fn begin(
         side: Side,
         certificate: &[u8],
@@ -419,7 +420,7 @@ impl Framing {
             ended: false,
         };
         if let Some(addr) = local {
-            f.local(addr);
+            f.local(addr)?;
         }
         if side == Side::Dial {
             if opening.channels.is_empty() && !opening.audio {
@@ -485,15 +486,22 @@ impl Framing {
         out
     }
 
-    /// The host port's own address: the one candidate this end advertises.
-    pub fn local(&mut self, addr: SocketAddr) {
+    /// The host port's own address: the one candidate this end advertises, once.
+    ///
+    /// # Errors
+    ///
+    /// An address the media stack takes as no host candidate (unspecified, multicast and the
+    /// like): advertising it would name a candidate its ICE agent never holds.
+    pub fn local(&mut self, addr: SocketAddr) -> Result<(), Failed> {
         if self.local.is_some() {
-            return;
+            return Ok(());
         }
+        let c = Candidate::host(addr, "udp").map_err(|_| {
+            format!("the host port's address {addr} is no candidate the media stack takes")
+        })?;
+        self.rtc.add_local_candidate(c);
         self.local = Some(addr);
-        if let Ok(c) = Candidate::host(addr, "udp") {
-            self.rtc.add_local_candidate(c);
-        }
+        Ok(())
     }
 
     /// Paths the host knows.
