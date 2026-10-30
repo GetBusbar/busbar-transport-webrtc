@@ -203,3 +203,43 @@ fn an_unknown_protection_profile_is_not_called_aes_cm() {
         );
     }
 }
+
+/// THE AEAD-AES-256-GCM PROFILE'S KEY DERIVATION BLOCK IS AES-256 (codeaudit tests crypto.rs:70):
+/// FIPS-197 Appendix C.3. Under AES-128 a 32-byte key derives nothing, and every association keyed
+/// under that profile would fail against a real peer (two ends of this framer would agree).
+#[test]
+fn the_256_bit_key_derivation_block_is_aes_256() {
+    let key: Vec<u8> = (0..32).collect();
+    let input: Vec<u8> = (0..16).map(|i| i * 0x11).collect();
+    let mut out = [0_u8; 16];
+    Ring.srtp_aes_256_ecb_round(&key, &input, &mut out);
+    assert_eq!(
+        out,
+        [
+            0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49,
+            0x60, 0x89
+        ]
+    );
+}
+
+/// THE DIGESTS ARE THE STANDARD ONES (codeaudit tests crypto.rs:357): SHA-256 (RFC 6234 "abc"),
+/// which the description's fingerprint states, and HMAC-SHA1 (RFC 2202 case 1), which signs and
+/// checks every connectivity check.
+#[test]
+fn the_digests_meet_their_vectors() {
+    assert_eq!(
+        Ring.sha256(b"abc"),
+        [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad
+        ]
+    );
+    assert_eq!(
+        Ring.sha1_hmac(&[0x0b; 20], &[b"Hi ", b"There"]),
+        [
+            0xb6, 0x17, 0x31, 0x86, 0x55, 0x05, 0x72, 0x64, 0xe2, 0x8b, 0xc0, 0xb6, 0xfb, 0x37,
+            0x8c, 0x8e, 0xf1, 0x46, 0xbe, 0x00
+        ]
+    );
+}

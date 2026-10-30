@@ -1075,3 +1075,40 @@ fn the_route_nominating_and_message_caps_hold() {
         && p.failed
         && p.bytes == b"a message larger than the channel can ever send"));
 }
+
+/// THIS END'S DESCRIPTION STATES ITS CERTIFICATE'S OWN FINGERPRINT (codeaudit tests
+/// crypto.rs:357): the SHA-256 of the host's certificate, which a browser checks the handshake
+/// against.
+#[test]
+fn the_description_states_the_certificates_sha_256() {
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), Instant::now());
+    let offer = String::from_utf8(dial.description()).expect("text");
+    let want: Vec<String> = ring::digest::digest(&ring::digest::SHA256, CERT)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    let stated = values(&offer, "a=fingerprint:sha-256 ")
+        .next()
+        .expect("a fingerprint line");
+    assert_eq!(stated.trim().to_ascii_uppercase(), want.join(":"));
+}
+
+/// AN ASSOCIATION KEYED UNDER AEAD-AES-256-GCM CARRIES MEDIA AND MESSAGES (codeaudit tests
+/// crypto.rs:70: every end-to-end run used the 128-bit profile).
+#[test]
+fn an_association_keyed_under_aes_256_gcm_carries_both_ways() {
+    let (mut dial, mut accept, mut now) = connected_under(PROFILE_AEAD_AES_256_GCM, 88);
+    let (channel, media) = (
+        stream_headed(&accept, b"label: "),
+        stream_headed(&accept, b"kind: audio"),
+    );
+    dial.f.emit(1, b"over 256", true, now).expect("sent");
+    for _ in 0..5 {
+        dial.f.emit(MEDIA_BASE, OPUS, false, now).expect("a frame");
+        run(&mut dial, &mut accept, &mut now, 20);
+    }
+    run(&mut dial, &mut accept, &mut now, 500);
+    assert_eq!(heard(&accept, channel), [b"over 256".to_vec()]);
+    assert!(heard(&accept, media).iter().any(|b| b == OPUS));
+}
