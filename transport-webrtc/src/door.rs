@@ -316,7 +316,7 @@ fn answer(
         }
         let n = p.bytes.len().min(room);
         let at = frame.extend(&p.bytes[..n]);
-        let flags = piece_flags(&p, continued, whole, n);
+        let flags = piece_flags(&p, continued, whole);
         pieces.push(FramePiece {
             stream: p.stream,
             offset: at as u64,
@@ -758,11 +758,11 @@ busbar_contract::plugin_door! {
     },
 }
 
-/// The `PIECE_*` bits of one piece of the framing's `p`: `n` of its bytes taken, `whole` when that
-/// is all of them, `continued` when a split field block's earlier piece came first. A closed data
+/// The `PIECE_*` bits of one piece of the framing's `p`: `whole` when it carries the last of its
+/// bytes, `continued` when a split field block's earlier piece came first. A closed data
 /// channel is the stream's END: its own empty piece with [`PIECE_END`] and [`PIECE_END_OF_FRAME`]
 /// (the transport contract's "streams end by flag"); an empty piece without it is an empty message.
-fn piece_flags(p: &Piece, continued: bool, whole: bool, n: usize) -> u16 {
+fn piece_flags(p: &Piece, continued: bool, whole: bool) -> u16 {
     if p.end {
         return PIECE_END | PIECE_END_OF_FRAME;
     }
@@ -780,7 +780,8 @@ fn piece_flags(p: &Piece, continued: bool, whole: bool, n: usize) -> u16 {
             flags |= PIECE_CONTINUED;
         }
     }
-    if p.text && n > 0 && !p.fields {
+    // Every piece of a text message, an empty one's one piece too.
+    if p.text && !p.fields {
         flags |= PIECE_TEXT;
     }
     if whole {
