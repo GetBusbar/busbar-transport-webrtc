@@ -36,6 +36,34 @@ fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
     assert_eq!(piece_flags(&empty_text, false, true, 0), PIECE_END_OF_FRAME);
 }
 
+/// The framer reads no setting: empty and `{}` are its settings; a key, or a blob that is no JSON
+/// object, is refused at validate, open and refresh, in the transport family's words.
+#[test]
+fn a_setting_the_framer_does_not_read_is_refused() {
+    for ok in [&b""[..], b"{}"] {
+        assert!(Framings::validate(ok).is_ok());
+        let f = Framings::open(ok, &[], 0).expect("opens");
+        assert!(f.refresh(ok, &[], 1).is_ok());
+    }
+    let keyed = br#"{"ice_lite":true}"#;
+    let why = "settings: ice_lite is not a setting this transport reads";
+    let r = Framings::validate(keyed).expect_err("a key is refused");
+    assert_eq!((r.outcome(), r.text()), (Outcome::Failed, Some(why)));
+    let r = Framings::open(keyed, &[], 0)
+        .err()
+        .expect("open refuses a key");
+    assert_eq!(r.text(), Some(why));
+    let f = Framings::open(b"{}", &[], 0).expect("opens");
+    assert_eq!(
+        f.refresh(keyed, &[], 1)
+            .expect_err("refresh refuses a key")
+            .text(),
+        Some(why)
+    );
+    let r = Framings::validate(b"[]").expect_err("not an object");
+    assert_eq!(r.text(), Some("settings: must be a JSON object"));
+}
+
 /// The other pieces keep the bits they had: a message's text, a field block and its continuation,
 /// and the frame's end only on the piece that carries its last byte.
 #[test]
