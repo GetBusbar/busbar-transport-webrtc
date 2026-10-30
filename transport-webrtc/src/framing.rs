@@ -248,7 +248,11 @@ impl Drop for Framing {
     }
 }
 
+/// One fingerprint octet: exactly two hex digits (RFC 4572 §5), never one digit or a sign.
 fn hex_pair(s: &str) -> Option<u8> {
+    if s.len() != 2 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     u8::from_str_radix(s, 16).ok()
 }
 
