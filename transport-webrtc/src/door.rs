@@ -94,9 +94,10 @@ struct Held1 {
     base: Instant,
     /// A message being gathered, per stream (whether it is text is its completing call's).
     gathering: HashMap<u64, Vec<u8>>,
-    /// A piece split across calls: the bytes not yet written, and whether they continue a field
-    /// line an earlier piece began.
-    partial: Option<(Piece, bool)>,
+    /// A piece split across calls, whether its rest continues a field line an earlier piece
+    /// began, and how many of its bytes are already written (an offset, so a large piece is
+    /// never shifted down once per answer).
+    partial: Option<(Piece, bool, usize)>,
 }
 
 impl Held1 {
@@ -309,31 +310,32 @@ fn answer(
     }
 
     // Pieces.
-    while let Some((mut p, continued)) = h
+    while let Some((mut p, continued, from)) = h
         .partial
         .take()
-        .or_else(|| h.f.next_piece().map(|p| (p, false)))
+        .or_else(|| h.f.next_piece().map(|p| (p, false, 0)))
     {
         let room = frame.cap().saturating_sub(frame.asked());
         if p.failed && p.bytes.len() > room && frame.asked() == 0 {
             // A failure's reason is never split: one longer than the whole buffer is cut to it.
             p.bytes.truncate(room);
         }
-        if pieces.asked() >= pieces.cap() || (room == 0 && !p.bytes.is_empty()) {
-            h.partial = Some((p, continued));
+        let left = p.bytes.len().saturating_sub(from);
+        if pieces.asked() >= pieces.cap() || (room == 0 && left != 0) {
+            h.partial = Some((p, continued, from));
             more = true;
             break;
         }
-        let whole = p.bytes.len() <= room;
+        let whole = left <= room;
         if !whole && (p.fields || p.failed) && frame.asked() != 0 {
             // A field block, or a failure's reason, starts a fresh answer rather than be split
             // (or cut) mid-buffer.
-            h.partial = Some((p, continued));
+            h.partial = Some((p, continued, from));
             more = true;
             break;
         }
-        let n = p.bytes.len().min(room);
-        let at = frame.extend(&p.bytes[..n]);
+        let n = left.min(room);
+        let at = frame.extend(&p.bytes[from..from + n]);
         let flags = piece_flags(&p, continued, whole);
         pieces.push(FramePiece {
             stream: p.stream,
@@ -347,10 +349,9 @@ fn answer(
             declared_len: 0,
         });
         if !whole {
-            p.bytes.drain(..n);
             // The rest of a field block continues the line this piece may have split.
             let continues = p.fields;
-            h.partial = Some((p, continues));
+            h.partial = Some((p, continues, from + n));
             more = true;
             break;
         }
