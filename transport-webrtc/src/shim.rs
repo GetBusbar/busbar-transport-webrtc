@@ -366,7 +366,11 @@ impl DtlsInstance for Shim {
 
     fn send_application_data(&mut self, data: &[u8]) -> Result<(), DtlsImplError> {
         let mut r = self.lock();
-        if !r.connected || r.closed {
+        // A session that is over says so: "pending" would have the stack keep the data and retry.
+        if r.closed {
+            return Err(DtlsImplError::ConnectionClosed);
+        }
+        if !r.connected {
             return Err(DtlsImplError::HandshakePending);
         }
         let mut b = r.spare_seal.pop().unwrap_or_default();
