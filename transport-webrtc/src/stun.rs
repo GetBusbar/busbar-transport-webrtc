@@ -36,7 +36,9 @@ pub enum Check {
     },
 }
 
-/// Read `datagram` as a Binding request or success response; `None` for anything else.
+/// Read `datagram` as a Binding request or success response; `None` for anything else, a message
+/// RFC 8489 §5 does not frame among it (a length that is no multiple of 4, or not the datagram's
+/// size less the header).
 #[must_use]
 pub fn read(datagram: &[u8]) -> Option<Check> {
     let head = datagram.get(..20)?;
@@ -45,21 +47,26 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
     }
     let kind = u16::from_be_bytes([head[0], head[1]]);
     let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
-    let body = datagram.get(20..20 + len)?;
+    if len % 4 != 0 || datagram.len() != 20 + len {
+        return None;
+    }
+    let body = &datagram[20..];
     let mut txid = [0_u8; 12];
     txid.copy_from_slice(&head[8..20]);
     match kind {
         BINDING_REQUEST => Some(Check::Request {
             txid,
-            nominates: attributes(body).any(|t| t == USE_CANDIDATE),
+            // USE-CANDIDATE has no value (RFC 8445 §16.1): one that carries one nominates nothing.
+            nominates: attributes(body).any(|a| a == (USE_CANDIDATE, 0)),
         }),
         BINDING_SUCCESS => Some(Check::Success { txid }),
         _ => None,
     }
 }
 
-/// The attribute types of a STUN body, in order, stopping at the first malformed one.
-fn attributes(body: &[u8]) -> impl Iterator<Item = u16> + '_ {
+/// The attributes of a STUN body, `(type, value length)` each, in order, stopping at the first
+/// malformed one.
+fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
     let mut at = 0_usize;
     std::iter::from_fn(move || {
         let h = body.get(at..at + 4)?;
@@ -70,7 +77,7 @@ fn attributes(body: &[u8]) -> impl Iterator<Item = u16> + '_ {
         if at > body.len() {
             return None;
         }
-        Some(t)
+        Some((t, len))
     })
 }
 
