@@ -121,25 +121,42 @@ pub fn is_relay_range(datagram: &[u8]) -> bool {
     matches!(datagram.first(), Some(20..=63))
 }
 
+/// The refusal keying material under a profile that is neither AEAD-AES-GCM nor AES_CM meets.
+pub const PROFILE_REFUSED: &str = "the keying material's protection profile is not AEAD-AES-GCM";
+
+/// THE ONE TABLE of admitted protection profiles: the profile whose registry code is `code`, and
+/// its keying material's length, for `material` of that length.
+///
+/// # Errors
+///
+/// [`crate::crypto::AES_CM_REFUSED`] for an AES_CM profile, [`PROFILE_REFUSED`] for any other but
+/// the two AEAD-AES-GCM ones, [`KEYING_LENGTH_REFUSED`] for material that is not its length.
+fn admitted(code: u32, material: &[u8]) -> Result<(SrtpProfile, usize), &'static str> {
+    /// `SRTP_AES128_CM_HMAC_SHA1_80` and `_32` (RFC 5764 §4.1.2).
+    const AES_CM: [u32; 2] = [0x0001, 0x0002];
+    let (profile, len) = match code {
+        PROFILE_AEAD_AES_128_GCM => (SrtpProfile::AEAD_AES_128_GCM, KEYING_LEN_128),
+        PROFILE_AEAD_AES_256_GCM => (SrtpProfile::AEAD_AES_256_GCM, KEYING_LEN_256),
+        c if AES_CM.contains(&c) => return Err(crate::crypto::AES_CM_REFUSED),
+        _ => return Err(PROFILE_REFUSED),
+    };
+    if material.len() != len {
+        return Err(KEYING_LENGTH_REFUSED);
+    }
+    Ok((profile, len))
+}
+
 /// The datagram that hands the shim `material`, exported under the protection profile whose
 /// registry code is `profile`. AEAD-AES-GCM only, at its profile's length; it is zeroed on drop.
 ///
 /// # Errors
 ///
-/// [`crate::crypto::AES_CM_REFUSED`] for a profile other than the two AEAD-AES-GCM ones,
-/// [`KEYING_LENGTH_REFUSED`] for material that is not that profile's length.
+/// What [`admitted`] refuses.
 pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>, &'static str> {
-    let (code, len) = match profile {
-        PROFILE_AEAD_AES_128_GCM => (PROFILE_AEAD_AES_128_GCM, KEYING_LEN_128),
-        PROFILE_AEAD_AES_256_GCM => (PROFILE_AEAD_AES_256_GCM, KEYING_LEN_256),
-        _ => return Err(crate::crypto::AES_CM_REFUSED),
-    };
-    if material.len() != len {
-        return Err(KEYING_LENGTH_REFUSED);
-    }
+    let (_, len) = admitted(profile, material)?;
     let mut frame = Zeroizing::new(Vec::with_capacity(2 + len));
     frame.push(KEYING);
-    frame.push(u8::try_from(code).unwrap_or_default());
+    frame.push(u8::try_from(profile).unwrap_or_default());
     frame.extend_from_slice(material);
     Ok(frame)
 }
@@ -250,18 +267,10 @@ impl Shim {
     ///
     /// # Errors
     ///
-    /// [`crate::crypto::AES_CM_REFUSED`], for a profile other than the two AEAD-AES-GCM ones;
-    /// [`KEYING_LENGTH_REFUSED`], for material that is not its profile's length.
+    /// What [`admitted`] refuses.
     pub fn keyed(&self, material: &[u8], profile: u32) -> Result<(), &'static str> {
-        let profile = match profile {
-            PROFILE_AEAD_AES_128_GCM => (SrtpProfile::AEAD_AES_128_GCM, KEYING_LEN_128),
-            PROFILE_AEAD_AES_256_GCM => (SrtpProfile::AEAD_AES_256_GCM, KEYING_LEN_256),
-            _ => return Err(crate::crypto::AES_CM_REFUSED),
-        };
-        if material.len() != profile.1 {
-            return Err(KEYING_LENGTH_REFUSED);
-        }
-        self.lock().keying = Some((Zeroizing::new(material.to_vec()), profile.0));
+        let (profile, _) = admitted(profile, material)?;
+        self.lock().keying = Some((Zeroizing::new(material.to_vec()), profile));
         Ok(())
     }
 

@@ -61,14 +61,15 @@ fn red_arm_the_gcm_ciphers_of_the_same_provider_seal_and_open() {
 #[test]
 fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
     let material = [7_u8; 60];
-    for profile in [
-        PROFILE_AES_CM_SHA1_80,
-        PROFILE_AES_CM_SHA1_32,
-        0x0003,
-        0xFFFF,
+    for (profile, why) in [
+        (PROFILE_AES_CM_SHA1_80, AES_CM_REFUSED),
+        (PROFILE_AES_CM_SHA1_32, AES_CM_REFUSED),
+        // Neither AES_CM nor GCM: refused in the words that name what is admitted.
+        (0x0003, crate::shim::PROFILE_REFUSED),
+        (0xFFFF, crate::shim::PROFILE_REFUSED),
     ] {
         let shim = Shim::default();
-        assert_eq!(shim.keyed(&material, profile), Err(AES_CM_REFUSED));
+        assert_eq!(shim.keyed(&material, profile), Err(why));
         assert!(!shim.holds_keying(), "profile {profile:#06x}: nothing held");
     }
     // RED arm: the two AEAD-AES-GCM profiles are taken, at their own lengths.
