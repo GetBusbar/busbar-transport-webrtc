@@ -14,7 +14,7 @@ license = "Apache-2.0"
 # as its one symbol; this crate exports none.
 crate-type = ["rlib"]
 
-# DEPENDENCY POLICY (THE DESIGN l.749-757, ARCHITECT D2 approval). A transport plugin's closure is
+# DEPENDENCY POLICY (THE DESIGN l.749-757). A transport plugin's closure is
 # busbar-contract plus what its framing needs:
 # * str0m: ICE, SRTP, SCTP and the session description, sans-IO, default features off.
 # * ring: every cryptographic primitive the framer runs (AEAD-AES-GCM, HMAC-SHA1, SHA-256, random).
@@ -26,8 +26,7 @@ crate-type = ["rlib"]
 # busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy
 # of the contract links.
 busbar-contract = { workspace = true }
-# str0m and aes are pinned here, in this crate's own manifest: busbar's tables dropped them when the
-# framer left busbar (#964), and no busbar member inherits them.
+# str0m and aes are pinned here, in this crate's own manifest: no busbar member names them.
 str0m = { version = "=0.24.1", default-features = false }
 ring = { workspace = true }
 aes = { version = "0.8", default-features = false, features = ["zeroize"] }
