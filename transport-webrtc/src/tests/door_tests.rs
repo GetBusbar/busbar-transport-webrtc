@@ -31,9 +31,14 @@ fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
     // An empty binary message is a frame, and it does not end the stream.
     let empty = piece(b"", false, false, false);
     assert_eq!(piece_flags(&empty, false, true, 0), PIECE_END_OF_FRAME);
-    // An empty text message is a frame too: not text (it carries no bytes), not the end.
+    // An empty text message is a frame too, and text (the contract: PIECE_TEXT rides "an EMPTY text
+    // message's one piece too"; codeaudit W2), never the end. RED before the fix: the bit was
+    // dropped because the piece carried no bytes, so the host read an empty BINARY message.
     let empty_text = piece(b"", false, true, false);
-    assert_eq!(piece_flags(&empty_text, false, true, 0), PIECE_END_OF_FRAME);
+    assert_eq!(
+        piece_flags(&empty_text, false, true, 0),
+        PIECE_TEXT | PIECE_END_OF_FRAME
+    );
 }
 
 /// The framer reads no setting: empty and `{}` are its settings; a key, or a blob that is no JSON
