@@ -61,8 +61,11 @@ pub const PROFILE_AEAD_AES_128_GCM: u32 = 0x0007;
 /// `SRTP_AEAD_AES_256_GCM`.
 pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 
-/// The most messages held for a channel not yet open, and the most pieces or routes queued.
+/// The most messages held for one channel (not yet open, or with no room in the stack).
 const MAX_HELD: usize = 256;
+/// The most routes, and the most data pieces, queued for the host at once: past it a route is
+/// dropped (a datagram network loses them anyway) and a data piece fails its stream.
+const MAX_QUEUED: usize = MAX_HELD * 4;
 
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
 /// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
@@ -202,7 +205,6 @@ pub struct Framing {
     ice: IceConnectionState,
     /// Checks that nominate, by transaction id, and the path each travels.
     nominating: HashMap<[u8; 12], u32>,
-    nominated: u32,
     asked: Option<Request>,
     request: Option<Request>,
     terms: Option<Terms>,
@@ -398,7 +400,6 @@ impl Framing {
             keyed: false,
             ice: IceConnectionState::New,
             nominating: HashMap::new(),
-            nominated: 0,
             asked: None,
             request: None,
             terms: None,
@@ -744,7 +745,6 @@ impl Framing {
     }
 
     fn nominate(&mut self, path: u32) {
-        self.nominated = path;
         let want = if self.bound == 0 {
             Request::Bind(path)
         } else if self.bound != path {
@@ -762,7 +762,8 @@ impl Framing {
     ///
     /// # Errors
     ///
-    /// A stream this framing does not carry, or a media frame the stack refuses.
+    /// A stream this framing does not carry, or a media line that carries no Opus. (What a stream
+    /// cannot carry fails that stream alone: its failure piece, never an error.)
     pub fn emit(
         &mut self,
         stream: u64,
@@ -1049,7 +1050,7 @@ impl Framing {
     }
 
     fn transmit(&mut self, to: SocketAddr, bytes: Vec<u8>) {
-        if self.routes.len() >= MAX_HELD * 4 {
+        if self.routes.len() >= MAX_QUEUED {
             return;
         }
         if stun::is_stun(&bytes) {
@@ -1143,7 +1144,7 @@ impl Framing {
                 }
                 // The reliable channel already acknowledged this message to the peer: dropping it
                 // loses it unseen, so the stream that cannot take it fails, loudly, alone.
-                if self.pieces.len() >= MAX_HELD * 4 {
+                if self.pieces.len() >= MAX_QUEUED {
                     self.fail_stream(
                         s,
                         "the data channel's messages outran the host: its queue reached the cap",
@@ -1190,7 +1191,7 @@ impl Framing {
                 self.head(s, &[("kind", "audio"), ("codec", "opus")]);
             }
             Event::MediaData(d) => {
-                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_HELD * 4 {
+                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_QUEUED {
                     return;
                 }
                 if let Some(s) = self
@@ -1269,12 +1270,6 @@ impl Framing {
         self.ended
     }
 
-    /// The path the far end nominated last, as this framer's ICE agent accepted it.
-    #[must_use]
-    pub fn nominated(&self) -> u32 {
-        self.nominated
-    }
-
     /// The messages held for `stream`, `(text, bytes)` each, in order: what a test reads of the
     /// queue.
     #[cfg(test)]
@@ -1289,12 +1284,6 @@ impl Framing {
     #[must_use]
     pub fn holds_keying(&self) -> bool {
         self.relay.iter().any(|f| shim::is_keying(f))
-    }
-
-    /// How long until `deadline`, from `now`.
-    #[must_use]
-    pub fn until(deadline: Instant, now: Instant) -> Duration {
-        deadline.saturating_duration_since(now)
     }
 }
 
