@@ -116,7 +116,10 @@ fn an_empty_message_from_the_host_reaches_the_framing() {
     let mut h = held1();
     let now = h.base;
     assert_eq!(emit(&mut h, 1, b"", true, true, now), Ok(0));
-    assert!(h.f.stream_failed(1), "the empty message was not dropped silently");
+    assert!(
+        h.f.stream_failed(1),
+        "the empty message was not dropped silently"
+    );
 }
 
 /// EMIT_TEXT IS READ ON THE CALL THAT COMPLETES THE FRAME (the contract's `EmitIn::flags`;

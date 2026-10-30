@@ -391,7 +391,8 @@ fn plaintext_queued_for_sealing_is_zeroised() {
     let mut buf = vec![0_u8; 2048];
     // More sends than the shim keeps spare buffers for, then every one polled out.
     for _ in 0..12 {
-        shim.send_application_data(&plain).expect("taken once connected");
+        shim.send_application_data(&plain)
+            .expect("taken once connected");
     }
     let mut sealed = 0;
     for _ in 0..20 {

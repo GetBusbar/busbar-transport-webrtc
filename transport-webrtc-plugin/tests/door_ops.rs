@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::transport::{
-    slot, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn, FramePiece,
-    FramerOut, FramerSink, FramingIn, IngestIn, LANE_RENDEZVOUS, PIECE_END_OF_FRAME,
-    PIECE_CONTINUED, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_DIAL, YIELD_MORE,
+    slot, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn,
+    FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, LANE_RENDEZVOUS, PIECE_CONTINUED,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_DIAL, YIELD_MORE,
 };
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{Frame, Plugin};
@@ -145,7 +145,11 @@ impl Host {
             .iter()
             .map(|p| {
                 let at = p.offset as usize;
-                (p.stream, p.flags, self.frame[at..at + p.len as usize].to_vec())
+                (
+                    p.stream,
+                    p.flags,
+                    self.frame[at..at + p.len as usize].to_vec(),
+                )
             })
             .collect();
         Answer {
@@ -420,8 +424,14 @@ fn what_does_not_fit_one_answer_continues_in_the_next() {
     assert_eq!(last.1, PIECE_TEXT | PIECE_END_OF_FRAME);
     let whole: Vec<u8> = offer.iter().flat_map(|x| x.2.clone()).collect();
     let now = Instant::now();
-    let mut far = Framing::begin(Side::Accept, CERT, FAR.parse().ok(), &Opening::default(), now)
-        .expect("begins");
+    let mut far = Framing::begin(
+        Side::Accept,
+        CERT,
+        FAR.parse().ok(),
+        &Opening::default(),
+        now,
+    )
+    .expect("begins");
     far.rendezvous(&whole, now)
         .expect("the reassembled offer is the description");
     let head = of(1 << 32);
@@ -454,7 +464,15 @@ fn a_failing_op_racing_finish_never_deadlocks() {
         for _ in 0..2000 {
             let token = begin(&p, &mut Host::new(4096, 16 * 1024), &[b"events"]).framing;
             std::thread::scope(|s| {
-                s.spawn(|| ingest(&p, &mut Host::new(4096, 4096), token, LANE_RENDEZVOUS, b"junk"));
+                s.spawn(|| {
+                    ingest(
+                        &p,
+                        &mut Host::new(4096, 4096),
+                        token,
+                        LANE_RENDEZVOUS,
+                        b"junk",
+                    )
+                });
                 s.spawn(|| finish(&p, &mut Host::new(4096, 4096), token));
             });
         }
