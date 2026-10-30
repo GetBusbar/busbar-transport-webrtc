@@ -661,12 +661,10 @@ fn emit(
     match h.gathering.remove(&stream) {
         Some((mut message, gathered_text)) => {
             message.extend_from_slice(bytes);
-            if !message.is_empty() {
-                h.f.emit(stream, &message, gathered_text || text, now)?;
-            }
+            h.f.emit(stream, &message, gathered_text || text, now)?;
         }
-        None if !bytes.is_empty() => h.f.emit(stream, bytes, text, now)?,
-        None => {}
+        // An empty message too: the framing says what becomes of it.
+        None => h.f.emit(stream, bytes, text, now)?,
     }
     Ok(full(h))
 }
