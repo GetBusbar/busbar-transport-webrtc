@@ -178,3 +178,27 @@ fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
         Err(DtlsImplError::ConnectionClosed)
     ));
 }
+
+/// A PROFILE THAT IS NOT AES_CM IS NOT CALLED AES_CM (codeaudit shim.rs:259): keying material
+/// under a profile code the framer does not know (or the NULL-cipher ones) is refused in words that
+/// name what is admitted, at the keying frame and at the shim alike; the two AES_CM codes keep
+/// theirs. RED before the fix: every unknown code was refused as "SRTP AES_CM".
+#[test]
+fn an_unknown_protection_profile_is_not_called_aes_cm() {
+    let why = "the keying material's protection profile is not AEAD-AES-GCM";
+    for code in [0x0005_u32, 0x0006, 0x1234] {
+        let material = [7_u8; 56];
+        assert_eq!(
+            crate::shim::keying_frame(&material, code).err(),
+            Some(why),
+            "{code:#x}"
+        );
+        assert_eq!(Shim::default().keyed(&material, code), Err(why), "{code:#x}");
+    }
+    for code in [PROFILE_AES_CM_SHA1_80, PROFILE_AES_CM_SHA1_32] {
+        assert_eq!(
+            crate::shim::keying_frame(&[7_u8; 56], code).err(),
+            Some(AES_CM_REFUSED)
+        );
+    }
+}
