@@ -269,7 +269,7 @@ fn expected() -> Vec<String> {
         format!("role={ROLE_FRAMER} claims=[\"webrtc\"] composes_over=[]"),
         "validate Ready lease=false ".into(),
         "open Ready lease=false ".into(),
-        "listen Refused".into(),
+        "listen Refused lease=false listen: the webrtc framer does not serve this op".into(),
         "locate Failed".into(),
         "encode Failed".into(),
         "begin without a lane Failed lease=false begin: a datagram framer reads its lane".into(),
