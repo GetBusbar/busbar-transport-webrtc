@@ -157,3 +157,24 @@ fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
     );
     assert!(out.contains("<redacted"), "no redaction marker: {out}");
 }
+
+/// A CLOSED SHIM SAYS SO (codeaudit shim.rs:370): data sent after the secure session closed is
+/// refused as a closed connection, never "handshake pending", which tells the media stack to keep
+/// it and retry against a session that is over. Before "connected" it is still pending.
+#[test]
+fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
+    use str0m::crypto::dtls::{DtlsImplError, DtlsInstance};
+    let mut shim = Shim::default();
+    assert!(matches!(
+        shim.send_application_data(b"early"),
+        Err(DtlsImplError::HandshakePending)
+    ));
+    shim.handle_packet(&crate::shim::CONNECTED_FRAME)
+        .expect("the relay is taken");
+    assert!(shim.send_application_data(b"open").is_ok());
+    shim.close().expect("closes");
+    assert!(matches!(
+        shim.send_application_data(b"late"),
+        Err(DtlsImplError::ConnectionClosed)
+    ));
+}
