@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::transport::{
-    slot, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FramePiece,
+    slot, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn, FramePiece,
     FramerOut, FramerSink, FramingIn, IngestIn, LANE_RENDEZVOUS, PIECE_END_OF_FRAME,
     PIECE_CONTINUED, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_DIAL, YIELD_MORE,
 };
@@ -432,4 +432,35 @@ fn what_does_not_fit_one_answer_continues_in_the_next() {
     assert_eq!(end.1, PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME);
     let block: Vec<u8> = head.iter().flat_map(|x| x.2.clone()).collect();
     assert_eq!(block, b"kind: audio\r\ncodec: opus\r\n".to_vec());
+}
+
+fn finish(p: &Plugin<Transport>, host: &mut Host, token: u64) -> Answer {
+    let l = host.lane(0);
+    let mut i: FinishIn = conf::input();
+    (i.framing, i.sink, i.lane) = (token, host.sink(), &l);
+    let (outcome, why, o) = go(p, slot::FINISH, i);
+    host.answer(outcome, why, &o)
+}
+
+/// ONE ASSOCIATION'S LOCK AND THE MAP'S ARE NEVER TAKEN IN OPPOSITE ORDERS (codeaudit tests
+/// door.rs:718; PL11): an op that fails (and so forgets its framing, taking the map's lock while it
+/// holds the association's) racing `finish` on the same framing (which lets the map's lock go
+/// before it takes the association's) never deadlocks. A watchdog fails the test rather than hang.
+#[test]
+fn a_failing_op_racing_finish_never_deadlocks() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let p = door();
+        for _ in 0..2000 {
+            let token = begin(&p, &mut Host::new(4096, 16 * 1024), &[b"events"]).framing;
+            std::thread::scope(|s| {
+                s.spawn(|| ingest(&p, &mut Host::new(4096, 4096), token, LANE_RENDEZVOUS, b"junk"));
+                s.spawn(|| finish(&p, &mut Host::new(4096, 4096), token));
+            });
+        }
+        let _ = done.send(());
+    });
+    finished
+        .recv_timeout(Duration::from_secs(120))
+        .expect("a failing op and finish deadlocked");
 }
