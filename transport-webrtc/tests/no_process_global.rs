@@ -27,6 +27,37 @@ fn code(line: &str) -> &str {
     line.split("//").next().unwrap_or_default()
 }
 
+/// `code` past its leading attributes (`#[...]`, brackets nested) and its visibility (`pub`, or
+/// `pub(...)` of any path).
+fn item(code: &str) -> &str {
+    let mut t = code.trim_start();
+    while let Some(rest) = t.strip_prefix("#[") {
+        let mut depth = 1_usize;
+        let end = rest.char_indices().find_map(|(i, c)| {
+            match c {
+                '[' => depth += 1,
+                ']' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(i)
+        });
+        let Some(end) = end else {
+            return t;
+        };
+        t = rest[end + 1..].trim_start();
+    }
+    if let Some(rest) = t.strip_prefix("pub") {
+        if let Some(scoped) = rest.strip_prefix('(') {
+            if let Some(close) = scoped.find(')') {
+                return scoped[close + 1..].trim_start();
+            }
+        } else if rest.starts_with(' ') {
+            return rest.trim_start();
+        }
+    }
+    t
+}
+
 /// What `text` (the source file `path`) declares that it may not.
 fn findings(path: &str, text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -34,11 +65,9 @@ fn findings(path: &str, text: &str) -> Vec<String> {
         let code = code(line);
         for form in FORMS {
             let hit = if form == "static " {
-                // A `static` ITEM: the word at the start of the line or after a visibility, never
-                // the `'static` lifetime.
-                let t = code.trim_start();
-                let t = t.strip_prefix("pub(crate) ").unwrap_or(t);
-                let t = t.strip_prefix("pub ").unwrap_or(t);
+                // A `static` ITEM: the word at the start of the line, after any attributes and any
+                // visibility, never the `'static` lifetime.
+                let t = item(code);
                 t.starts_with("static ") || t.starts_with("static mut ")
             } else {
                 code.contains(form)
