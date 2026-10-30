@@ -190,6 +190,8 @@ pub struct Framing {
     opened_buf: Zeroizing<Vec<u8>>,
     local: Option<SocketAddr>,
     local_creds: IceCreds,
+    /// The far end's check secret: the key its answers to this end's checks are signed under.
+    remote_secret: Option<Zeroizing<String>>,
     pending: Option<SdpPendingOffer>,
     described: bool,
     paths: HashMap<u32, SocketAddr>,
@@ -381,6 +383,7 @@ impl Framing {
             opened_buf: Zeroizing::new(Vec::new()),
             local: None,
             local_creds,
+            remote_secret: None,
             pending: None,
             described: false,
             paths: HashMap::new(),
@@ -548,6 +551,7 @@ impl Framing {
             }
         }
         self.settled = true;
+        self.remote_secret = Some(remote_secret.clone());
         self.terms = Some(Terms {
             initiates: initiates(text),
             local_user: self.local_creds.ufrag.clone(),
@@ -671,12 +675,22 @@ impl Framing {
                     Some(Check::Success { txid })
                         if self.side == Side::Dial && self.nominating.get(&txid) == Some(&path) =>
                     {
-                        self.nominating.remove(&txid);
+                        // The stack's verdict on the answer is not observable: it counts only when
+                        // its integrity verifies under the far end's check secret.
+                        let genuine = self
+                            .remote_secret
+                            .as_ref()
+                            .is_some_and(|k| stun::integrity_holds(bytes, k.as_bytes()));
+                        if genuine {
+                            self.nominating.remove(&txid);
+                        }
                         self.feed(from, bytes, now);
-                        if matches!(
-                            self.ice,
-                            IceConnectionState::Connected | IceConnectionState::Completed
-                        ) {
+                        if genuine
+                            && matches!(
+                                self.ice,
+                                IceConnectionState::Connected | IceConnectionState::Completed
+                            )
+                        {
                             self.nominate(path);
                         }
                         return;
