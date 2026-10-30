@@ -833,6 +833,12 @@ impl Framing {
         });
     }
 
+    /// Whether this framing carries `stream` (a data channel or a media line).
+    #[must_use]
+    pub fn carries(&self, stream: u64) -> bool {
+        self.channel_by_stream.contains_key(&stream) || self.media_by_stream.contains_key(&stream)
+    }
+
     /// Whether `stream` is FULL: the host emits nothing more on it until its writable piece.
     #[must_use]
     pub fn stream_full(&self, stream: u64) -> bool {

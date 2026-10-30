@@ -640,7 +640,18 @@ fn emit(
             0
         }
     };
-    if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
+    // The re-call after YIELD_MORE carries nothing new.
+    if bytes.is_empty() && !end {
+        return Ok(full(h));
+    }
+    // A stream the framing does not carry is refused at a message's first piece, never gathered.
+    if !h.f.carries(stream) {
+        h.gathering.remove(&stream);
+        return Err(format!("no stream {stream} on this association"));
+    }
+    // A failed stream's host was told: what it still emits there, and what was gathered, goes.
+    if h.f.stream_failed(stream) {
+        h.gathering.remove(&stream);
         return Ok(full(h));
     }
     let gathered = h.gathering.get(&stream).map_or(0, Vec::len);
