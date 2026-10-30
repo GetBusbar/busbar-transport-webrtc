@@ -312,8 +312,8 @@ fn answer(
         .or_else(|| h.f.next_piece().map(|p| (p, false)))
     {
         let room = frame.cap().saturating_sub(frame.asked());
-        if p.failed && p.bytes.len() > room && room > 0 {
-            // A failure's reason is never split: what fits of it is the reason.
+        if p.failed && p.bytes.len() > room && frame.asked() == 0 {
+            // A failure's reason is never split: one longer than the whole buffer is cut to it.
             p.bytes.truncate(room);
         }
         if pieces.asked() >= pieces.cap() || (room == 0 && !p.bytes.is_empty()) {
@@ -322,8 +322,9 @@ fn answer(
             break;
         }
         let whole = p.bytes.len() <= room;
-        if !whole && p.fields && frame.asked() != 0 {
-            // A field block starts a fresh answer rather than split mid-buffer.
+        if !whole && (p.fields || p.failed) && frame.asked() != 0 {
+            // A field block, or a failure's reason, starts a fresh answer rather than be split
+            // (or cut) mid-buffer.
             h.partial = Some((p, continued));
             more = true;
             break;
