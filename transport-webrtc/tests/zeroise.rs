@@ -361,9 +361,8 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
 }
 
 /// KNOWN RESIDUAL, ASSERTED AS KNOWN (listed in the README): the published str0m 0.24.1 and
-/// dimpl 0.7.4 free their internal copies of the keying material unzeroed (the zeroize-on-drop
-/// fork patches were dropped, OWNER 2026-10-25). This test pins that the residual is real and
-/// confined to those crates: it fails when upstream starts zeroising, which is the cue to turn it
+/// dimpl 0.7.4 free their internal copies of the keying material unzeroed. This test pins that the
+/// residual is real and confined to those crates: it fails when upstream starts zeroising, which is the cue to turn it
 /// into a gate and delete the README note.
 #[test]
 fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
