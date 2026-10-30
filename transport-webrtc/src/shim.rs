@@ -189,8 +189,8 @@ pub struct Relay {
     connected_owed: bool,
     opened: VecDeque<Zeroizing<Vec<u8>>>,
     spare_opened: Vec<Zeroizing<Vec<u8>>>,
-    to_seal: VecDeque<Vec<u8>>,
-    spare_seal: Vec<Vec<u8>>,
+    to_seal: VecDeque<Zeroizing<Vec<u8>>>,
+    spare_seal: Vec<Zeroizing<Vec<u8>>>,
     closed: bool,
     now: Option<Instant>,
 }
@@ -346,7 +346,7 @@ impl DtlsInstance for Shim {
                 buf[1..n].copy_from_slice(&data);
             }
             // A packet larger than the stack's record buffer is no datagram the port can carry.
-            data.clear();
+            data.zeroize();
             if r.spare_seal.len() < SPARE {
                 r.spare_seal.push(data);
             }
