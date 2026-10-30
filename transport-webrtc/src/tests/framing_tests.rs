@@ -92,9 +92,12 @@ impl End {
     }
 
     fn host(&mut self, keying: Option<&[u8]>, now: Instant) -> Result<(), Failed> {
-        let r = self
-            .f
-            .host(self.bound, self.verified, keying.map(|k| (self.profile, k)), now);
+        let r = self.f.host(
+            self.bound,
+            self.verified,
+            keying.map(|k| (self.profile, k)),
+            now,
+        );
         if keying.is_some() && r.is_ok() {
             self.keyed = true;
         }
@@ -511,7 +514,10 @@ fn one_channels_overflow_never_fails_the_association() {
         .filter(|p| p.stream == 1 && p.failed)
         .collect();
     assert_eq!(failed.len(), 1);
-    assert_eq!(failed[0].bytes, b"too many messages held for the channel".to_vec());
+    assert_eq!(
+        failed[0].bytes,
+        b"too many messages held for the channel".to_vec()
+    );
 }
 
 /// THE RENDEZVOUS TERMS ARE BOUNDED: a far end's description that advertises any number of
@@ -658,7 +664,10 @@ fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
     let (mut dial, mut accept, mut now) = connected();
     dial.f.emit(1, b"", true, now).expect("taken");
     run(&mut dial, &mut accept, &mut now, 500);
-    assert!(dial.f.stream_failed(1), "the channel that cannot carry it fails");
+    assert!(
+        dial.f.stream_failed(1),
+        "the channel that cannot carry it fails"
+    );
     assert!(
         dial.pieces.iter().any(|p| p.stream == 1
             && p.failed
@@ -711,7 +720,10 @@ fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
     }
     for (id, s) in &ids {
         assert!(!dial.f.channels.contains_key(id), "channel {s} forgotten");
-        assert!(!dial.f.channel_by_stream.contains_key(s), "stream {s} forgotten");
+        assert!(
+            !dial.f.channel_by_stream.contains_key(s),
+            "stream {s} forgotten"
+        );
         assert!(!dial.f.failed_sids.contains(s), "failure of {s} forgotten");
     }
     let addr = |s: &str| s.parse::<SocketAddr>().expect("an address");
@@ -935,7 +947,11 @@ fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
             .datagram(spoof_path, spoof, Lane::Clear, &r.bytes, now);
     }
     accept.collect();
-    assert_eq!(heard(&accept, media).len(), before, "not read from a spoofed path");
+    assert_eq!(
+        heard(&accept, media).len(),
+        before,
+        "not read from a spoofed path"
+    );
     let bound = accept.bound;
     for r in &frames {
         accept
@@ -943,7 +959,11 @@ fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
             .datagram(bound, dial.addr, Lane::Clear, &r.bytes, now);
     }
     accept.collect();
-    assert_eq!(heard(&accept, media).len(), before + 1, "read from the bound path");
+    assert_eq!(
+        heard(&accept, media).len(),
+        before + 1,
+        "read from the bound path"
+    );
 }
 
 /// THE FRAMER'S LINE TO ITS SHIM IS ITS OWN (codeaudit tests framing.rs:646): a far end's
@@ -997,7 +1017,10 @@ fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
     dial.f.timeout(t0 + s(31));
     assert!(!dial.f.ended(), "5 s into the second outage it holds");
     dial.f.timeout(t0 + s(25) + ICE_FAILED_AFTER + s(1));
-    assert!(dial.f.ended(), "past the window from the second outage it ends");
+    assert!(
+        dial.f.ended(),
+        "past the window from the second outage it ends"
+    );
 }
 
 /// BACK-PRESSURE IS A PROTOCOL (codeaudit tests framing.rs:977): a channel whose held messages
@@ -1012,7 +1035,9 @@ fn a_full_channel_is_writable_again_once_drained() {
     }
     for n in 0..HIGH_WATER {
         assert!(!dial.f.stream_full(1), "full only at the mark");
-        dial.f.emit(1, &[n as u8; 20_000], false, now).expect("taken");
+        dial.f
+            .emit(1, &[n as u8; 20_000], false, now)
+            .expect("taken");
     }
     assert!(dial.f.stream_full(1), "FULL at the high-water mark");
     run(&mut dial, &mut accept, &mut now, 3000);
@@ -1034,9 +1059,16 @@ fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
     let (&id, _) = dial.f.channels.iter().next().expect("the channel");
     dial.f.rtc.direct_api().close_data_channel(id);
     run(&mut dial, &mut accept, &mut now, 3000);
-    let ours: Vec<&Piece> = accept.pieces.iter().filter(|p| p.stream == stream).collect();
+    let ours: Vec<&Piece> = accept
+        .pieces
+        .iter()
+        .filter(|p| p.stream == stream)
+        .collect();
     assert_eq!(ours.iter().filter(|p| p.end).count(), 1, "{ours:?}");
-    assert!(ours.last().is_some_and(|p| p.end), "the END is its last piece");
+    assert!(
+        ours.last().is_some_and(|p| p.end),
+        "the END is its last piece"
+    );
 }
 
 /// THE NAMED CAPS HOLD (codeaudit tests framing.rs:991): the route queue never grows past
@@ -1063,13 +1095,18 @@ fn the_route_nominating_and_message_caps_hold() {
     }
 
     let (mut dial, mut accept, mut now) = connected();
-    dial.f.emit(1, &vec![7; MAX_MESSAGE], false, now).expect("taken");
+    dial.f
+        .emit(1, &vec![7; MAX_MESSAGE], false, now)
+        .expect("taken");
     assert!(!dial.f.stream_failed(1), "a message at the cap is sent");
     run(&mut dial, &mut accept, &mut now, 3000);
     dial.f
         .emit(1, &vec![7; MAX_MESSAGE + 1], false, now)
         .expect("taken");
-    assert!(dial.f.stream_failed(1), "one byte past it fails the channel");
+    assert!(
+        dial.f.stream_failed(1),
+        "one byte past it fails the channel"
+    );
     dial.collect();
     assert!(dial.pieces.iter().any(|p| p.stream == 1
         && p.failed

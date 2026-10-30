@@ -194,7 +194,11 @@ fn an_unknown_protection_profile_is_not_called_aes_cm() {
             Some(why),
             "{code:#x}"
         );
-        assert_eq!(Shim::default().keyed(&material, code), Err(why), "{code:#x}");
+        assert_eq!(
+            Shim::default().keyed(&material, code),
+            Err(why),
+            "{code:#x}"
+        );
     }
     for code in [PROFILE_AES_CM_SHA1_80, PROFILE_AES_CM_SHA1_32] {
         assert_eq!(
