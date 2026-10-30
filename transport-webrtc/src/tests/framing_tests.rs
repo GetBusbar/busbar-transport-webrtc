@@ -583,3 +583,34 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
         "with its failure piece"
     );
 }
+
+/// A FIELD VALUE NEVER HOLDS CR OR LF (the transport contract's field block; codeaudit W1): a far
+/// end's data channel label is any UTF-8 (RFC 8832 §5.1), so one with a line break would forge
+/// field lines in the stream's head. That channel is refused: its stream fails, in words, and no
+/// field block carries the label. RED before the fix: the head held `x\r\n:status: 200`.
+#[test]
+fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let (&id, &stream) = dial.f.channels.iter().next().expect("the offered channel");
+    for label in ["x\r\n:status: 200", "a\nb", "c\rd"] {
+        dial.f.event(Event::ChannelOpen(id, label.to_string()));
+    }
+    dial.collect();
+    assert!(
+        dial.pieces.iter().all(|p| !(p.stream == stream && p.fields)),
+        "no field block carries the label: {:?}",
+        dial.pieces
+    );
+    assert!(dial.f.stream_failed(stream), "the channel is refused");
+    let failed: Vec<&Piece> = dial
+        .pieces
+        .iter()
+        .filter(|p| p.stream == stream && p.failed)
+        .collect();
+    assert_eq!(failed.len(), 1, "one failure piece");
+    assert_eq!(
+        failed[0].bytes,
+        b"the far end's channel label holds a line break".to_vec()
+    );
+}
