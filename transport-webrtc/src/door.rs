@@ -491,22 +491,28 @@ impl SafeSlot for Locate {
 }
 
 /// What a dialling framing's opening fields offer.
-fn opening(i: &Lent<'_, BeginIn>) -> Opening {
+///
+/// # Errors
+///
+/// A `channel` field whose label is empty or not text: skipping it would shift every later
+/// channel off the stream its field order names.
+fn opening(i: &Lent<'_, BeginIn>) -> Result<Opening, &'static str> {
     let mut o = Opening::default();
     for f in i.fields().iter() {
-        let (Ok(name), Ok(value)) = (
-            f.field(|x| &x.name).as_str(),
-            f.field(|x| &x.value).as_str(),
-        ) else {
+        let Ok(name) = f.field(|x| &x.name).as_str() else {
             continue;
         };
-        match name {
-            "channel" if !value.is_empty() => o.channels.push(value.to_owned()),
-            "media" if value == "audio" => o.audio = true,
+        let value = f.field(|x| &x.value).as_str();
+        match (name, value) {
+            ("channel", Ok(label)) if !label.is_empty() => o.channels.push(label.to_owned()),
+            ("channel", _) => {
+                return Err("begin: a channel field whose label is empty or not text");
+            }
+            ("media", Ok("audio")) => o.audio = true,
             _ => {}
         }
     }
-    o
+    Ok(o)
 }
 
 /// The host's public certificate, from the facts.
@@ -549,7 +555,11 @@ impl SafeSlot for Begin {
         let now_ns = sink.now_monotonic_ns;
         let base = Instant::now();
         let local = addr(lane.field(|l| &l.local_addr));
-        let f = match Framing::begin(side, cert, local, &opening(&i), base) {
+        let opening = match opening(&i) {
+            Ok(offered) => offered,
+            Err(why) => return o.fail(Refusal::failed(why)),
+        };
+        let f = match Framing::begin(side, cert, local, &opening, base) {
             Ok(f) => f,
             Err(why) => return o.fail(Refusal::failed(why)),
         };
