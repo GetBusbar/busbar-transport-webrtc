@@ -19,8 +19,8 @@
 //!   writable again with a [`PIECE_WRITABLE`] piece; a channel that cannot carry a message fails
 //!   alone, with a [`PIECE_STREAM_FAILED`] piece.
 //! * `timer`: the clock; `finish`: the association closes.
-//! * `locate`, `encode`, `refuse`, `detach`, `adopt`: REFUSED (no authority to dial, no envelope,
-//!   no upgrade); every carrier op: REFUSED.
+//! * `locate`, `encode`, `refuse`, `detach`, `adopt`: FAILED with the reason (no authority to dial,
+//!   no envelope, no upgrade); every carrier op: REFUSED (`not_served!`).
 //!
 //! A full host buffer is back-pressure: READY with [`YIELD_MORE`], and the re-call carries no new
 //! bytes. No op pends.
@@ -455,7 +455,7 @@ impl<I: AbiIn + Why> SafeSlot for Unused<I> {
     }
 }
 
-/// `locate`: REFUSED. An association's far end comes from its description, judged by the host.
+/// `locate`: FAILED. An association's far end comes from its description, judged by the host.
 pub struct Locate;
 impl SafeSlot for Locate {
     type In = LocateIn;
@@ -685,7 +685,7 @@ impl SafeSlot for Timer {
     }
 }
 
-/// `detach`: REFUSED (an association is never handed to another framer).
+/// `detach`: FAILED (an association is never handed to another framer).
 pub struct Detach;
 impl SafeSlot for Detach {
     type In = FramingIn;

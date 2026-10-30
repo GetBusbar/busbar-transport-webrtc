@@ -39,18 +39,6 @@ fn subject() -> Subject {
     Subject::new(busbar_transport_webrtc::linked::door, CDYLIB, "{}")
 }
 
-const fn abi(s: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
-}
-
-const NONE: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
-
 /// The host's buffers for one framer op.
 struct Host {
     wire: Vec<u8>,
@@ -102,8 +90,8 @@ impl Host {
             lane,
             path: 0,
             bound: 0,
-            path_addr: NONE,
-            local_addr: abi(LOCAL.as_bytes()),
+            path_addr: AbiStr::ABSENT,
+            local_addr: AbiStr::of_bytes(LOCAL.as_bytes()),
             verified: 0,
             _reserved: 0,
             keying: std::ptr::null(),
@@ -155,17 +143,17 @@ fn begin(p: &Plugin<Transport>, side: u32, lane: bool) -> (String, u64) {
     let facts = ConnFacts {
         size: std::mem::size_of::<ConnFacts>() as u32,
         _reserved: 0,
-        offered_name: NONE,
-        agreed_protocol: NONE,
-        peer_subject: NONE,
-        peer_issuer: NONE,
-        peer_fingerprint: NONE,
-        claim: NONE,
-        local_certificate: abi(CERT),
+        offered_name: AbiStr::ABSENT,
+        agreed_protocol: AbiStr::ABSENT,
+        peer_subject: AbiStr::ABSENT,
+        peer_issuer: AbiStr::ABSENT,
+        peer_fingerprint: AbiStr::ABSENT,
+        claim: AbiStr::ABSENT,
+        local_certificate: AbiStr::of_bytes(CERT),
     };
     let fields = [Field {
-        name: abi(b"channel"),
-        value: abi(b"events"),
+        name: AbiStr::of_bytes(b"channel"),
+        value: AbiStr::of_bytes(b"events"),
     }];
     let l = host.lane(0);
     let mut i: BeginIn = conf::input();
