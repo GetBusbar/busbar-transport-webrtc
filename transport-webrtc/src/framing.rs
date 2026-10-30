@@ -492,9 +492,24 @@ impl Framing {
     /// Paths the host knows.
     pub fn paths(&mut self, paths: impl IntoIterator<Item = (u32, SocketAddr)>) {
         for (path, addr) in paths {
-            if path != 0 {
-                self.paths.insert(path, addr);
-                self.addrs.insert(addr, path);
+            self.point(path, addr);
+        }
+    }
+
+    /// Path `path` is at `addr` (path `0` is none): an address it pointed at before, or a path
+    /// `addr` belonged to before, is forgotten, so the two maps hold only what is current.
+    fn point(&mut self, path: u32, addr: SocketAddr) {
+        if path == 0 {
+            return;
+        }
+        if let Some(old) = self.paths.insert(path, addr) {
+            if old != addr && self.addrs.get(&old) == Some(&path) {
+                self.addrs.remove(&old);
+            }
+        }
+        if let Some(prev) = self.addrs.insert(addr, path) {
+            if prev != path && self.paths.get(&prev) == Some(&addr) {
+                self.paths.remove(&prev);
             }
         }
     }
@@ -629,10 +644,7 @@ impl Framing {
         if self.failed.is_some() || bytes.is_empty() {
             return;
         }
-        if path != 0 {
-            self.paths.insert(path, from);
-            self.addrs.insert(from, path);
-        }
+        self.point(path, from);
         match lane {
             Lane::Secured => {
                 // Application data waits for peer verification.
@@ -1129,7 +1141,7 @@ impl Framing {
                     self.channel_by_stream.remove(&s);
                     self.held.remove(&s);
                     self.full.remove(&s);
-                    if self.failed_sids.contains(&s) {
+                    if self.failed_sids.remove(&s) {
                         // A failed stream already ended, failed.
                         return;
                     }
