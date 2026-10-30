@@ -557,7 +557,7 @@ fn an_ice_disconnect_holds_the_association_until_it_fails() {
 fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     let (mut dial, _accept, _now) = connected();
     let (&id, &stream) = dial.f.channels.iter().next().expect("an open channel");
-    while dial.f.pieces.len() < MAX_HELD * 4 {
+    while dial.f.pieces.len() < MAX_QUEUED {
         dial.f.pieces.push_back(Piece {
             stream: 99,
             bytes: vec![0],
