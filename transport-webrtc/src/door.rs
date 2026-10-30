@@ -183,11 +183,8 @@ fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
 }
 
 /// Read the lane's host state into the framing: new paths, the bound path, the verified bit and
-/// the keying-material item.
+/// the keying-material item. (The host port's address is read once, at `begin`.)
 fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Result<(), String> {
-    if let Some(a) = addr(lane.field(|l| &l.local_addr)) {
-        h.f.local(a);
-    }
     h.f.paths(
         lane.paths()
             .iter()
@@ -554,12 +551,17 @@ impl SafeSlot for Begin {
         let sink = i.field(|x| &x.sink);
         let now_ns = sink.now_monotonic_ns;
         let base = Instant::now();
-        let local = addr(lane.field(|l| &l.local_addr));
+        // The one candidate this end advertises, and where every datagram it reads arrives.
+        let Some(local) = addr(lane.field(|l| &l.local_addr)) else {
+            return o.fail(Refusal::failed(
+                "begin: the lane names no address of the host's port",
+            ));
+        };
         let opening = match opening(&i) {
             Ok(offered) => offered,
             Err(why) => return o.fail(Refusal::failed(why)),
         };
-        let f = match Framing::begin(side, cert, local, &opening, base) {
+        let f = match Framing::begin(side, cert, Some(local), &opening, base) {
             Ok(f) => f,
             Err(why) => return o.fail(Refusal::failed(why)),
         };
