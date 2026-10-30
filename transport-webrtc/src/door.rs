@@ -209,8 +209,8 @@ fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Resu
 ///
 /// # Errors
 ///
-/// Rendezvous terms that even an empty frame buffer could not hold whole: the framing fails rather
-/// than answer YIELD_MORE with no progress.
+/// A datagram that even an empty wire buffer, or rendezvous terms that even an empty frame buffer,
+/// could not hold whole: the framing fails rather than answer YIELD_MORE with no progress.
 fn answer(
     h: &mut Held1,
     sink: Lent<'_, FramerSink>,
@@ -228,6 +228,13 @@ fn answer(
     if let Some(lane) = lane {
         let mut routes = lane.routes();
         while let Some(r) = h.f.next_route() {
+            if r.bytes.len() > wire.cap() {
+                // Even an empty wire buffer could never hold it: YIELD_MORE would be a re-call
+                // loop with no progress.
+                return Err(
+                    "a datagram the media stack sends does not fit the host's wire buffer".into(),
+                );
+            }
             let room = wire.cap().saturating_sub(wire.asked());
             if routes.asked() >= routes.cap() || room < r.bytes.len() {
                 h.f.unroute(r);
