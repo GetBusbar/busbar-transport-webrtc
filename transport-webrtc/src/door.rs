@@ -185,11 +185,17 @@ fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
 /// Read the lane's host state into the framing: new paths, the bound path, the verified bit and
 /// the keying-material item. (The host port's address is read once, at `begin`.)
 fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Result<(), String> {
-    h.f.paths(
-        lane.paths()
-            .iter()
-            .filter_map(|p| Some((p.path, addr(p.field(|x| &x.addr))?))),
-    );
+    // A path is read whole or refused: one dropped would lose its checks without a word.
+    let paths = lane
+        .paths()
+        .iter()
+        .map(|p| {
+            addr(p.field(|x| &x.addr))
+                .map(|a| (p.path, a))
+                .ok_or_else(|| format!("the host's path {} names no address", p.path))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    h.f.paths(paths);
     let keying = match lane.keying() {
         Some(k) => {
             check_keying(&k)
