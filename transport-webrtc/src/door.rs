@@ -92,8 +92,8 @@ struct Held1 {
     f: Framing,
     base_ns: u64,
     base: Instant,
-    /// A message being gathered, per stream, and whether it is text.
-    gathering: HashMap<u64, (Vec<u8>, bool)>,
+    /// A message being gathered, per stream (whether it is text is its completing call's).
+    gathering: HashMap<u64, Vec<u8>>,
     /// A piece split across calls: the bytes not yet written, and whether they continue a field
     /// line an earlier piece began.
     partial: Option<(Piece, bool)>,
@@ -643,7 +643,7 @@ fn emit(
     if (bytes.is_empty() && !end) || h.f.stream_failed(stream) {
         return Ok(full(h));
     }
-    let gathered = h.gathering.get(&stream).map_or(0, |g| g.0.len());
+    let gathered = h.gathering.get(&stream).map_or(0, Vec::len);
     if gathered + bytes.len() > MAX_MESSAGE {
         // A message no channel could carry: its stream fails, alone, and nothing more
         // of it is gathered.
@@ -652,16 +652,18 @@ fn emit(
         return Ok(0);
     }
     if !end {
-        let g = h.gathering.entry(stream).or_default();
-        g.0.extend_from_slice(bytes);
-        g.1 |= text;
+        h.gathering
+            .entry(stream)
+            .or_default()
+            .extend_from_slice(bytes);
         return Ok(full(h));
     }
     // A message in one piece is sent from the host's bytes, never gathered.
     match h.gathering.remove(&stream) {
-        Some((mut message, gathered_text)) => {
+        // Text or binary is what the call that completes the message says.
+        Some(mut message) => {
             message.extend_from_slice(bytes);
-            h.f.emit(stream, &message, gathered_text || text, now)?;
+            h.f.emit(stream, &message, text, now)?;
         }
         // An empty message too: the framing says what becomes of it.
         None => h.f.emit(stream, bytes, text, now)?,
