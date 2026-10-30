@@ -176,3 +176,31 @@ fn a_poisoned_association_is_never_served_torn() {
     assert!(unwound.is_err() && slot.is_poisoned());
     assert!(hold(&slot).is_none(), "the torn state is not served");
 }
+
+/// A FAILED STREAM'S PIECE AND A WRITABLE PIECE KEEP THEIR BITS (codeaudit tests door.rs:771): the
+/// failure ends its frame and its stream, failed; the writable piece is that bit alone.
+#[test]
+fn a_failure_and_a_writable_piece_keep_their_bits() {
+    let mut failed = piece(b"the channel refused the message", false, false, false);
+    failed.failed = true;
+    assert_eq!(
+        piece_flags(&failed, false, true),
+        PIECE_STREAM_FAILED | PIECE_END_OF_FRAME
+    );
+    let mut writable = piece(b"", false, false, false);
+    writable.writable = true;
+    assert_eq!(piece_flags(&writable, false, true), PIECE_WRITABLE);
+}
+
+/// A MESSAGE GATHERED PAST WHAT A CHANNEL CAN CARRY FAILS ITS STREAM AND LETS GO OF IT (codeaudit
+/// tests door.rs:651): nothing of it is kept to prefix a later message.
+#[test]
+fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
+    let mut h = held1();
+    let now = h.base;
+    let half = vec![1_u8; MAX_MESSAGE / 2 + 1];
+    assert_eq!(emit(&mut h, 1, &half, false, false, now), Ok(0));
+    assert_eq!(emit(&mut h, 1, &half, false, false, now), Ok(0));
+    assert!(h.f.stream_failed(1), "past the cap, the stream fails");
+    assert!(h.gathering.is_empty(), "and nothing of it is kept");
+}
