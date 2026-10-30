@@ -1059,6 +1059,12 @@ impl Framing {
             }
             Event::ChannelOpen(id, label) => {
                 let s = self.channel_stream(id);
+                // A field value never holds CR or LF: a label with a line break (any UTF-8 is a
+                // label on the wire) would forge field lines, so that channel is refused.
+                if label.contains(['\r', '\n']) {
+                    self.fail_stream(s, "the far end's channel label holds a line break");
+                    return;
+                }
                 self.head(s, &[("label", &label)]);
             }
             Event::ChannelData(d) => {
