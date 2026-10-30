@@ -598,7 +598,9 @@ fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
     }
     dial.collect();
     assert!(
-        dial.pieces.iter().all(|p| !(p.stream == stream && p.fields)),
+        dial.pieces
+            .iter()
+            .all(|p| !(p.stream == stream && p.fields)),
         "no field block carries the label: {:?}",
         dial.pieces
     );
