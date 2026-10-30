@@ -115,7 +115,13 @@ impl Port {
                 continue;
             }
             if let Some(f) = self.assocs.get_mut(id) {
-                let _ = f.emit(g.stream, &g.bytes, g.end_of_frame, g.text, now);
+                // A refused echo is named here, not left to show as the browser's timeout.
+                if let Err(e) = f.emit(g.stream, &g.bytes, g.end_of_frame, g.text, now) {
+                    eprintln!(
+                        "webrtc-conformance-subject: association {id} refused an echo on stream {}: {e}",
+                        g.stream
+                    );
+                }
             }
         }
         self.flush();
