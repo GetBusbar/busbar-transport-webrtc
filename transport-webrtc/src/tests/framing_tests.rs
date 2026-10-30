@@ -729,3 +729,68 @@ fn a_forged_binding_success_nominates_nothing() {
         dial.requests
     );
 }
+
+/// A STUN message as RFC 8489 §5 frames it: `kind`, a body of `attrs`, the header's length `len`.
+fn stun_message(kind: u16, len: u16, attrs: &[u8]) -> Vec<u8> {
+    let mut m = kind.to_be_bytes().to_vec();
+    m.extend_from_slice(&len.to_be_bytes());
+    m.extend_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+    m.extend_from_slice(&[9_u8; 12]);
+    m.extend_from_slice(attrs);
+    m
+}
+
+/// ONLY A WELL-FRAMED STUN MESSAGE IS READ AS A CHECK (codeaudit stun.rs:35; RFC 8489 §5: the
+/// length is a multiple of 4 and the datagram's size less the header; RFC 8445 §16.1:
+/// USE-CANDIDATE has no value): junk the ICE agent rejects never reaches the nomination
+/// bookkeeping. RED before the fix: each of these was read as a nominating request.
+#[test]
+fn only_a_well_framed_check_is_read() {
+    let use_candidate = [0x00, 0x25, 0, 0];
+    assert_eq!(
+        stun::read(&stun_message(1, 4, &use_candidate)),
+        Some(Check::Request {
+            txid: [9; 12],
+            nominates: true
+        }),
+        "a well-framed nominating request is read"
+    );
+    // A length that is no multiple of 4.
+    assert_eq!(stun::read(&stun_message(1, 1, &use_candidate[..1])), None);
+    // Bytes past the length the header states.
+    let mut trailing = stun_message(1, 4, &use_candidate);
+    trailing.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(stun::read(&trailing), None);
+    // A USE-CANDIDATE that carries a value nominates nothing.
+    let valued = [0x00, 0x25, 0, 4, 1, 2, 3, 4];
+    assert_eq!(
+        stun::read(&stun_message(1, 8, &valued)),
+        Some(Check::Request {
+            txid: [9; 12],
+            nominates: false
+        })
+    );
+}
+
+/// A FINGERPRINT IS TWO HEX DIGITS PER OCTET (codeaudit framing.rs:246; RFC 4572 §5): a token of
+/// one digit or with a sign is a malformed fingerprint, refused at the rendezvous. RED before the
+/// fix: `+F` and `1` were read as octets.
+#[test]
+fn a_fingerprint_octet_is_exactly_two_hex_digits() {
+    let with = |octets: &str| {
+        format!(
+            "v=0\r\na=ice-ufrag:abcd\r\na=ice-pwd:0123456789abcdef0123456789\r\n\
+             a=fingerprint:sha-256 {octets}\r\n"
+        )
+    };
+    assert!(read_remote(&with(&["AB"; 32].join(":"))).is_ok());
+    for bad in ["+F", "1", "-1", "ABC"] {
+        let mut octets = vec!["AB"; 31];
+        octets.insert(0, bad);
+        assert_eq!(
+            read_remote(&with(&octets.join(":"))).err(),
+            Some("a malformed fingerprint".to_string()),
+            "{bad:?} is no octet"
+        );
+    }
+}
