@@ -159,3 +159,20 @@ fn nothing_is_gathered_for_a_stream_that_cannot_take_it() {
         "a failed stream's gathered bytes are let go"
     );
 }
+
+/// A POISONED ASSOCIATION IS NEVER SERVED TORN (codeaudit W7): a panic that unwound while an op
+/// held the association's lock left its state half-mutated, so the association is forgotten,
+/// as a failed op forgets it, rather than run on. RED before the fix: the poison was recovered
+/// and the torn state handed to the next op.
+#[test]
+fn a_poisoned_association_is_never_served_torn() {
+    let slot: Slot = Arc::new(Mutex::new(Some(held1())));
+    let torn = Arc::clone(&slot);
+    let unwound = std::thread::spawn(move || {
+        let _held = torn.lock().expect("unpoisoned");
+        panic!("an op unwound mid-way");
+    })
+    .join();
+    assert!(unwound.is_err() && slot.is_poisoned());
+    assert!(hold(&slot).is_none(), "the torn state is not served");
+}
