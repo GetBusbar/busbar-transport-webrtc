@@ -33,6 +33,8 @@ struct End {
     pieces: Vec<Piece>,
     requests: Vec<Request>,
     sent: Vec<Route>,
+    /// The protection profile its host keys under.
+    profile: u32,
 }
 
 impl End {
@@ -49,6 +51,7 @@ impl End {
             pieces: Vec::new(),
             requests: Vec::new(),
             sent: Vec::new(),
+            profile: PROFILE,
         }
     }
 
@@ -91,7 +94,7 @@ impl End {
     fn host(&mut self, keying: Option<&[u8]>, now: Instant) -> Result<(), Failed> {
         let r = self
             .f
-            .host(self.bound, self.verified, keying.map(|k| (PROFILE, k)), now);
+            .host(self.bound, self.verified, keying.map(|k| (self.profile, k)), now);
         if keying.is_some() && r.is_ok() {
             self.keyed = true;
         }
@@ -161,6 +164,11 @@ fn opening() -> Opening {
 
 /// Two ends through the rendezvous, ICE, verification and keying: a connected association.
 fn connected() -> (End, End, Instant) {
+    connected_under(PROFILE, 56)
+}
+
+/// [`connected`], keyed under `profile` with `len` bytes of material.
+fn connected_under(profile: u32, len: u8) -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
     let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
@@ -180,8 +188,9 @@ fn connected() -> (End, End, Instant) {
     run(&mut dial, &mut accept, &mut now, 3000);
     assert_ne!(dial.bound, 0, "the dialling end's nomination was bound");
     assert_ne!(accept.bound, 0, "the accepting end's nomination was bound");
-    let material: Vec<u8> = (0..56).collect();
+    let material: Vec<u8> = (0..len).collect();
     for e in [&mut dial, &mut accept] {
+        e.profile = profile;
         e.verified = true;
         e.host(Some(&material), now).expect("keyed");
     }
@@ -453,20 +462,29 @@ fn a_held_message_is_never_overtaken() {
         .map(|p| (p.stream, p.bytes.clone()))
         .expect("the accepting end opened the channel");
     // The first two fill most of the stack's send buffer, the third does not fit beside them and
-    // is held, the fourth would fit.
+    // is held, the fourth would fit. Each is its own content, so a swap of any two shows
+    // (codeaudit tests framing_tests.rs:469).
     let sent = [
         vec![1_u8; 60_000],
-        vec![2_u8; 60_000],
+        vec![2_u8; 59_999],
         vec![3_u8; 20_000],
         b"fourth".to_vec(),
     ];
-    for m in &sent {
+    for (n, m) in sent.iter().enumerate() {
+        if n == 3 {
+            assert!(
+                !dial.f.held(1).is_empty(),
+                "the third is held when the fourth comes, or this proves nothing"
+            );
+        }
         dial.f.emit(1, m, false, now).expect("taken");
     }
     run(&mut dial, &mut accept, &mut now, 3000);
-    let got: Vec<usize> = heard(&accept, stream).iter().map(Vec::len).collect();
-    let want: Vec<usize> = sent.iter().map(Vec::len).collect();
-    assert_eq!(got, want, "the channel delivered out of order");
+    assert_eq!(
+        heard(&accept, stream),
+        sent.to_vec(),
+        "the channel delivered out of order"
+    );
 }
 
 /// A FAILED STREAM FAILS ALONE (the transport contract: "A failed stream fails alone: its siblings
@@ -476,13 +494,24 @@ fn a_held_message_is_never_overtaken() {
 fn one_channels_overflow_never_fails_the_association() {
     let now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
-    // The channel is not open yet: every message is held.
+    // The channel is not open yet: every message is held, up to the cap and never past it.
     for n in 0..(MAX_HELD + 50) {
         if let Err(e) = dial.f.emit(1, &[n as u8; 8], false, now) {
             panic!("one channel's overflow failed the whole association: {e}");
         }
+        assert!(dial.f.held(1).len() <= MAX_HELD, "held past the cap");
     }
     assert_eq!(dial.f.failure(), None, "the association carries on");
+    // What it costs is that channel (codeaudit tests framing_tests.rs:485): failed, once, in words.
+    assert!(dial.f.stream_failed(1), "the channel that overflowed fails");
+    dial.collect();
+    let failed: Vec<&Piece> = dial
+        .pieces
+        .iter()
+        .filter(|p| p.stream == 1 && p.failed)
+        .collect();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].bytes, b"too many messages held for the channel".to_vec());
 }
 
 /// THE RENDEZVOUS TERMS ARE BOUNDED: a far end's description that advertises any number of
@@ -504,10 +533,11 @@ fn a_far_ends_candidates_are_read_up_to_a_bound() {
         ));
     }
     let (_, _, _, candidates) = read_remote(&d).expect("terms");
-    assert!(!candidates.is_empty(), "candidates are read");
-    assert!(
-        candidates.len() <= 64,
-        "{} candidates read from one description: the terms grow without bound",
+    // Exactly the bound (codeaudit tests framing_tests.rs:509): raising it shows.
+    assert_eq!(
+        candidates.len(),
+        MAX_CANDIDATES,
+        "{} candidates read from one description",
         candidates.len()
     );
 }
