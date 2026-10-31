@@ -3,7 +3,7 @@
 
 //! **THE PUBLISHED CONFORMANCE SUITE, RUN BY THIS PLUGIN**: one contract, one suite, no exemption
 //! for a datagram framer. busbar's suite, at the commit this repo pins (`.busbar-ref`), drives the
-//! `webrtc` framer two ways through the one loader: LINKED (the logic crate's `door::door`) and
+//! `webrtc` framer two ways through the one loader: LINKED (the logic crate's `door`) and
 //! DROPPED IN (this crate's built cdylib), over the transport kind's DATAGRAM script (the framer's
 //! tail states `FRAMING_DATAGRAM`) with the inputs in `conformance.json`: `locate` and `encode`
 //! refused (`not_served!`), a dialled `begin` offering one text piece that is a session description, and a
@@ -12,7 +12,7 @@
 //! `--release`. The framer's own both-ways drive is `tests/datagram_witness.rs`.
 
 busbar_test_kit::conformance_suite! {
-    door: busbar_transport_webrtc::door::door,
+    door: busbar_transport_webrtc::door,
     cdylib: "busbar_transport_webrtc_plugin",
     inputs: include_str!("conformance.json"),
 }
@@ -23,7 +23,7 @@ use busbar_plugin_loader::dispatch::LinkedRow;
 /// `declares.json`, so it is read, as every transport's is. RED before: it was never embedded.
 #[test]
 fn the_statement_carries_the_declares_document() {
-    let row = LinkedRow::of(busbar_transport_webrtc::door::door).unwrap();
+    let row = LinkedRow::of(busbar_transport_webrtc::door).unwrap();
     let read = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
     assert_eq!(
         busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes),
@@ -40,7 +40,7 @@ fn the_statement_offers_no_auth_point() {
     use busbar_contract::abi::mechanism::extensions::get;
     use busbar_contract::abi::transport::check::check_offered_points;
     use busbar_contract::abi::transport::EXT_OFFERED_POINTS;
-    let row = LinkedRow::of(busbar_transport_webrtc::door::door).unwrap();
+    let row = LinkedRow::of(busbar_transport_webrtc::door).unwrap();
     let read = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
     assert_eq!(
         get(&read.extensions.bytes, EXT_OFFERED_POINTS),

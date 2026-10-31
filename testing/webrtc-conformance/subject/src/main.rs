@@ -4,7 +4,7 @@
 //! THE BROWSER CELL'S SUBJECT: busbar's terminating path for a datagram association, answering a
 //! headless browser's offer and echoing what it sends.
 //!
-//! The path is the one busbar serves: the `webrtc` door (`busbar_transport_webrtc::door::door`)
+//! The path is the one busbar serves: the `webrtc` door (`busbar_transport_webrtc::door`)
 //! admitted and opened by the root's own doors module (`crates/busbar/src/root/doors.rs`, mounted
 //! here), driven by the connector's datagram driver (`busbar_core_connector::datagram`) over one
 //! host port (`busbar_core_connector::udp::ReadyPort`) with the host's DTLS engine. The browser's
@@ -62,7 +62,7 @@ fn door() -> Arc<dyn FramerDoor> {
     let key = busbar_transport_webrtc::linked::KEY;
     let plugin = doors::row_bind(key)
         .and_then(|bind| {
-            LinkedRow::of(busbar_transport_webrtc::door::door)
+            LinkedRow::of(busbar_transport_webrtc::door)
                 .and_then(|row| load_linked::<TransportKind>(&row, bind))
                 .map_err(|e| e.to_string())
         })
