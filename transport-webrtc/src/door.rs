@@ -32,54 +32,27 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
-use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::transport::settings_reading;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::check::check_keying;
 use busbar_contract::abi::transport::{
-    AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnFacts, ConnIn,
-    ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
-    FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
-    LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FACT_ACCEPTS, FACT_DIALS, FRAME_PIECE_SIZE, FRAMING_DATAGRAM,
-    HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
+    AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnFacts, ConnIn, ConnOut,
+    DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece,
+    FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut, LocateIn,
+    LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, WriteIn, CANCEL_NOTHING_MOVED,
+    EMIT_TEXT, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
     PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT,
-    SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
-    YIELD_STREAM_FULL,
+    PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, SIDE_DIAL,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
+use crate::claims::CLAIM_NAMES;
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE};
-
-/// The claim this entry answers for.
-pub const KEY: &str = "webrtc";
-
-const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
-
-/// The claim's row: no selector forms (an association is reached through the rendezvous, never
-/// selected on its datagrams), a session whose first unit opens on its first datagram.
-const CLAIMS: &[Claim] = &[{
-    let mut c = Claim::EMPTY;
-    c.selector_forms = abi_str("");
-    c.egress_selector_forms = abi_str("");
-    c.session = 1;
-    c.session_bound = 1;
-    c.unit0_trigger = UNIT0_FIRST_DATAGRAM;
-    c
-}];
-
-/// The transport kind's tail: a datagram framer, composing over nothing (the port is the host's),
-/// whose framings begin accepted or dialled (never detached or adopted).
-const TAIL: TransportTail = {
-    let mut t = TransportTail::EMPTY.with_claim_rows(CLAIMS);
-    t.role = ROLE_FRAMER;
-    t.framing = FRAMING_DATAGRAM;
-    t.frame_piece_size = FRAME_PIECE_SIZE;
-    t.facts = FACT_ACCEPTS | FACT_DIALS;
-    t
-};
+pub use crate::meta::KEY;
+use crate::meta::TAIL;
 
 /// THE AUTH POINTS THIS DOOR OFFERS: none. An association has no head and the door makes no auth
 /// call, so the record is stated EMPTY (ruling R2): with no record the host would read
@@ -101,13 +74,13 @@ busbar_contract::statement_extensions!(
     ]
 );
 
-/// The door's Statement.
-pub const STATEMENT: Statement = Statement {
-    kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
-    claims: CLAIM_NAMES.as_ptr(),
-    claims_len: CLAIM_NAMES.len(),
-    extensions: EXTENSIONS,
-    ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
+/// The door's Statement: the `webrtc` datagram framer.
+pub const STATEMENT: Statement = {
+    let mut s = statement(KEY, env!("CARGO_PKG_VERSION"), 64)
+        .with_kind_tail(&TAIL)
+        .with_claims(CLAIM_NAMES);
+    s.extensions = EXTENSIONS;
+    s
 };
 
 /// One association's framing and the host clock it is read against.
