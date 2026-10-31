@@ -1,61 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! KEYS ARE ZEROISED (THE DESIGN l.753): the keying material the framer holds is cleared before
-//! its memory goes back to the allocator, whether it was held to the end or refused.
-//!
-//! THE WITNESS is this binary's allocator: every block freed is read first, and a block still
-//! holding a marked key (eight marker bytes, then the key's id 48 times) is counted against that
-//! id. Each test marks its own id, so tests running side by side never count each other's frees.
-//!
-//! THE RED ARM, kept: the same marked key in a plain `Vec`, dropped, IS seen, so a zero count
-//! below is the zeroising, never a witness that cannot see.
-
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+//! Exact initialized payloads retained by the real shim and framing, observed immediately before
+//! their allocations are freed. Spare capacity, opaque structs and unrelated allocations are never
+//! read. The accepted-pair script also watches the actual upstream KeyingMaterial Vec exposed by
+//! its public slice view; it does not infer ownership from a backtrace.
 
 use core::net::SocketAddr;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
-use busbar_transport_webrtc::framing::{
+use crate::framing::{
     Failed, Framing, Lane, Opening, Piece, Request, Route, Side, Terms, DESCRIPTION,
     PROFILE_AEAD_AES_128_GCM,
 };
-use busbar_transport_webrtc::shim::Shim;
+use crate::shim::Shim;
 
 const MARK: [u8; 8] = *b"ZEROISE!";
-/// A key: the marker and 48 bytes of its id (the AEAD-AES-128-GCM material's 56 bytes).
 const KEY_LEN: usize = 56;
 const IDS: usize = 8;
 
-/// Frees of a marked key, unzeroed, that did not come from the media stack: the plugin's own.
+static REGISTERED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+static FREED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED_UNZEROED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
-/// Frees of a marked key, unzeroed, made from inside `str0m`, `dimpl` or `ring` (the known residual).
+static REGISTERED_UPSTREAM: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+static FREED_UPSTREAM_TOTAL: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED_UPSTREAM: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 
-thread_local!(static ATTRIBUTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
-
-/// Whether the free being made is made from inside a published upstream crate: the call stack
-/// names one of them. (A re-entrant free, made by the stack capture itself, is never upstream.)
-fn from_upstream() -> bool {
-    if ATTRIBUTING.with(|a| a.replace(true)) {
-        return false;
-    }
-    let stack = std::backtrace::Backtrace::force_capture().to_string();
-    ATTRIBUTING.with(|a| a.set(false));
-    // `ring::` alone would also match `string::`: it must start a path (after `: ` or `<`).
-    stack.contains("str0m::")
-        || stack.contains("dimpl::")
-        || stack.contains(": ring::")
-        || stack.contains("<ring::")
+struct Payload {
+    ptr: usize,
+    len: usize,
+    id: usize,
+    upstream: bool,
 }
 
-/// The system allocator, reading every block it frees for a marked key.
-struct Watch;
+thread_local! {
+    // These synchronous sans-IO scripts allocate and drop their buffers on the test's thread.
+    // Metadata owns no payload: registration/reallocation can only free unregistered metadata.
+    static PAYLOADS: RefCell<Vec<Payload>> = const { RefCell::new(Vec::new()) };
+}
 
-/// The id of the marked key at the start of `w`, if one is there whole.
 fn marked(w: &[u8]) -> Option<usize> {
     let (mark, rest) = w.split_at_checked(MARK.len())?;
     let id = *rest.first()?;
@@ -66,40 +53,122 @@ fn marked(w: &[u8]) -> Option<usize> {
     .filter(|id| *id < IDS)
 }
 
-// SAFETY: every call is forwarded to `System` with its own arguments; `dealloc` only reads the
-// block it is handed before forwarding.
+fn register(bytes: &[u8], upstream: bool) {
+    let Some(id) = bytes.windows(KEY_LEN).find_map(marked) else {
+        return;
+    };
+    PAYLOADS.with(|p| {
+        let mut payloads = p.borrow_mut();
+        let ptr = bytes.as_ptr().addr();
+        if let Some(held) = payloads.iter_mut().find(|p| p.ptr == ptr) {
+            assert_eq!((held.id, held.upstream), (id, upstream));
+            held.len = held.len.max(bytes.len());
+            return;
+        }
+        payloads.push(Payload {
+            ptr,
+            len: bytes.len(),
+            id,
+            upstream,
+        });
+        let registered = if upstream {
+            &REGISTERED_UPSTREAM
+        } else {
+            &REGISTERED
+        };
+        registered[id].fetch_add(1, Ordering::SeqCst);
+    });
+}
+
+/// Called after the real Vec's payload is initialized, before it is retained by the product.
+/// Each caller passes the allocation's first byte, not a subslice or the test input's copy.
+pub(crate) fn owned(bytes: &[u8]) {
+    register(bytes, false);
+}
+
+/// KeyingMaterial::new in the pinned dependency creates a Vec whose entire initialized payload
+/// this public slice exposes. It is retained and destroyed by the actual media stack.
+pub(crate) fn upstream(bytes: &[u8]) {
+    register(bytes, true);
+}
+
+struct Watch;
+
+// SAFETY: allocation calls forward unchanged. Only registered, initialized payload bytes are
+// inspected at deallocation, while the actual allocation is still live and exclusively released.
 unsafe impl GlobalAlloc for Watch {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller's contract, forwarded.
+        // SAFETY: the caller's allocation contract is forwarded unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if layout.size() >= KEY_LEN {
-            // SAFETY: `ptr` is a live block of `layout.size()` bytes until `System` frees it below,
-            // and its owner has given it up: nothing else reads or writes it during `dealloc`. It
-            // is read as plain bytes and nothing read is kept.
-            let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
-            for at in 0..=block.len() - KEY_LEN {
-                if block[at] == MARK[0] {
-                    if let Some(id) = marked(&block[at..]) {
-                        let counter = if from_upstream() {
-                            &FREED_UPSTREAM
-                        } else {
-                            &FREED_UNZEROED
-                        };
-                        counter[id].fetch_add(1, Ordering::SeqCst);
-                    }
+        let _ = PAYLOADS.try_with(|p| {
+            let Ok(mut payloads) = p.try_borrow_mut() else {
+                return;
+            };
+            let Some(at) = payloads.iter().position(|p| p.ptr == ptr.addr()) else {
+                return;
+            };
+            let payload = payloads.swap_remove(at);
+            // A mismatch is counted as failure without constructing an invalid slice. The hook
+            // recorded the Vec's initialized length, which may be smaller than its capacity.
+            let intact = if payload.len <= layout.size() {
+                // SAFETY: the hook registered this allocation's base and initialized payload
+                // length. Its u8 bytes stay initialized across clear/zeroize and buffer reuse;
+                // no struct padding or spare capacity is read. The allocation is not freed yet.
+                let bytes = unsafe { std::slice::from_raw_parts(ptr, payload.len) };
+                if payload.upstream {
+                    bytes
+                        .windows(KEY_LEN)
+                        .any(|w| marked(w) == Some(payload.id))
+                } else {
+                    bytes.iter().any(|b| *b != 0)
                 }
+            } else {
+                true
+            };
+            let (freed, unzeroed) = if payload.upstream {
+                (&FREED_UPSTREAM_TOTAL, &FREED_UPSTREAM)
+            } else {
+                (&FREED, &FREED_UNZEROED)
+            };
+            freed[payload.id].fetch_add(1, Ordering::SeqCst);
+            if intact {
+                unzeroed[payload.id].fetch_add(1, Ordering::SeqCst);
             }
-        }
-        // SAFETY: the caller's contract, forwarded.
+        });
+        // SAFETY: the caller's allocation contract is forwarded unchanged.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
 
 #[global_allocator]
 static WATCH: Watch = Watch;
+
+fn all_freed(id: u8) {
+    let id = usize::from(id);
+    let registered = REGISTERED[id].load(Ordering::SeqCst);
+    assert!(
+        registered > 0,
+        "the real product payload must be registered"
+    );
+    assert_eq!(
+        FREED[id].load(Ordering::SeqCst),
+        registered,
+        "every registered payload must be freed"
+    );
+}
+
+fn upstream_freed(id: u8) {
+    let id = usize::from(id);
+    let registered = REGISTERED_UPSTREAM[id].load(Ordering::SeqCst);
+    assert!(
+        registered > 0,
+        "the actual upstream payload must be registered"
+    );
+    assert_eq!(FREED_UPSTREAM_TOTAL[id].load(Ordering::SeqCst), registered);
+}
 
 /// The marked key `id`, on the stack (the stack is not the allocator's to watch).
 fn key(id: u8) -> [u8; KEY_LEN] {
@@ -113,7 +182,7 @@ fn freed_unzeroed(id: u8) -> usize {
     FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
 }
 
-/// Unzeroed frees of key `id` made from inside str0m, dimpl or ring.
+/// Unzeroed frees of the exact upstream KeyingMaterial payload for key `id`.
 fn freed_upstream(id: u8) -> usize {
     FREED_UPSTREAM[usize::from(id)].load(Ordering::SeqCst)
 }
@@ -126,6 +195,7 @@ fn keying_material_held_by_the_shim_is_zeroised_when_it_drops() {
         .expect("AEAD-AES-128-GCM is taken");
     assert!(shim.holds_keying(), "the material was held, on the heap");
     drop(shim);
+    all_freed(1);
     assert_eq!(freed_unzeroed(1), 0, "the held material was freed unzeroed");
 }
 
@@ -141,7 +211,7 @@ fn keying_material_a_framing_refuses_is_zeroised() {
         now,
     )
     .expect("begins");
-    // Keying before verification: the framing copies the item, refuses it, and holds nothing.
+    // Refusals happen before a copy is made: neither one may retain or allocate material.
     assert!(f
         .host(0, false, Some((PROFILE_AEAD_AES_128_GCM, &material)), now)
         .is_err());
@@ -149,7 +219,18 @@ fn keying_material_a_framing_refuses_is_zeroised() {
     // AES_CM, verified: refused the same way.
     assert!(f.host(0, true, Some((0x0001, &material)), now).is_err());
     assert!(!f.holds_keying());
+    assert_eq!(REGISTERED[2].load(Ordering::SeqCst), 0);
+    // A verified item is queued until rendezvous. A second item is refused while the first
+    // remains held: dropping this real framing must wipe and free its queued material.
+    f.host(0, true, Some((PROFILE_AEAD_AES_128_GCM, &material)), now)
+        .expect("queued");
+    assert!(f.holds_keying());
+    assert!(f
+        .host(0, true, Some((PROFILE_AEAD_AES_128_GCM, &material)), now)
+        .is_err());
+    assert!(f.holds_keying());
     drop(f);
+    all_freed(2);
     assert_eq!(freed_unzeroed(2), 0, "a refused item was freed unzeroed");
 }
 
@@ -157,14 +238,18 @@ fn keying_material_a_framing_refuses_is_zeroised() {
 fn red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed() {
     let material = key(3);
     let plain: Vec<u8> = material.to_vec();
+    owned(&plain);
     drop(std::hint::black_box(plain));
+    all_freed(3);
     assert!(
         freed_unzeroed(3) >= 1,
         "the witness must see a key freed without zeroising"
     );
     // And a zeroising holder of the same bytes is not seen.
     let held = zeroize::Zeroizing::new(key(4).to_vec());
+    owned(&held);
     drop(std::hint::black_box(held));
+    all_freed(4);
     assert_eq!(freed_unzeroed(4), 0);
 }
 
@@ -346,13 +431,15 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 
 /// THE PLUGIN'S OWN COPIES on the accepted path: keying material presented to a verified
 /// association passes through the framing and its shim, and none of what the plugin holds is
-/// freed unzeroed. Frees made from inside str0m, dimpl or ring are counted apart (next test).
+/// freed unzeroed. The upstream KeyingMaterial payload is counted apart (next test).
 #[test]
 fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     let material = key(5);
     let (dial, accept, _) = connected_with(&material);
     assert!(dial.keyed && accept.keyed, "both ends took the material");
     drop((dial, accept));
+    all_freed(5);
+    upstream_freed(5);
     assert_eq!(
         freed_unzeroed(5),
         0,
@@ -361,14 +448,16 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
 }
 
 /// KNOWN RESIDUAL, ASSERTED AS KNOWN (listed in the README): the published str0m 0.24.1 and
-/// dimpl 0.7.4 free their internal copies of the keying material unzeroed. This test pins that the
-/// residual is real and confined to those crates: it fails when upstream starts zeroising, which is the cue to turn it
+/// dimpl 0.7.4 free the KeyingMaterial payload unzeroed. This test follows that actual payload
+/// through the accepted pair and fails when upstream starts zeroising, which is the cue to turn it
 /// into a gate and delete the README note.
 #[test]
 fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     let material = key(6);
     let (dial, accept, _) = connected_with(&material);
     drop((dial, accept));
+    all_freed(6);
+    upstream_freed(6);
     assert!(
         freed_upstream(6) >= 1,
         "str0m/dimpl no longer free the keying material unzeroed: make this a gate and drop the README note"
@@ -379,14 +468,14 @@ fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
 /// PLAINTEXT QUEUED FOR SEALING IS ZEROISED TOO (codeaudit W10; the shim's doc: relayed plaintext
 /// is zeroised): what the media stack hands the shim to seal is cleared before its buffer is
 /// reused, freed past the spare count, or dropped with the shim still queued. Both counts are
-/// asserted: the shim's own calls run under the stack's trait, whose name a backtrace carries.
+/// asserted against the exact registered payloads, including buffers reused after polling.
 /// RED before the fix: the buffers were cleared by length only and freed holding the plaintext.
 #[test]
 fn plaintext_queued_for_sealing_is_zeroised() {
     use str0m::crypto::dtls::{DtlsInstance, DtlsOutput};
     let plain = key(7);
     let mut shim = Shim::default();
-    shim.handle_packet(&busbar_transport_webrtc::shim::CONNECTED_FRAME)
+    shim.handle_packet(&crate::shim::CONNECTED_FRAME)
         .expect("the relay is taken");
     let mut buf = vec![0_u8; 2048];
     // More sends than the shim keeps spare buffers for, then every one polled out.
@@ -406,6 +495,7 @@ fn plaintext_queued_for_sealing_is_zeroised() {
     shim.send_application_data(&plain).expect("taken");
     buf.fill(0);
     drop(shim);
+    all_freed(7);
     assert_eq!(
         freed_unzeroed(7) + freed_upstream(7),
         0,

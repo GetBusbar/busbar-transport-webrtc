@@ -158,6 +158,8 @@ pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>,
     frame.push(KEYING);
     frame.push(u8::try_from(profile).unwrap_or_default());
     frame.extend_from_slice(material);
+    #[cfg(test)]
+    crate::zeroise_tests::owned(&frame);
     Ok(frame)
 }
 
@@ -270,7 +272,10 @@ impl Shim {
     /// What [`admitted`] refuses.
     pub fn keyed(&self, material: &[u8], profile: u32) -> Result<(), &'static str> {
         let (profile, _) = admitted(profile, material)?;
-        self.lock().keying = Some((Zeroizing::new(material.to_vec()), profile));
+        let material = Zeroizing::new(material.to_vec());
+        #[cfg(test)]
+        crate::zeroise_tests::owned(&material);
+        self.lock().keying = Some((material, profile));
         Ok(())
     }
 
@@ -291,6 +296,8 @@ impl Shim {
         }
         let mut b = r.spare_opened.pop().unwrap_or_default();
         b.extend_from_slice(plaintext);
+        #[cfg(test)]
+        crate::zeroise_tests::owned(&b);
         r.opened.push_back(b);
     }
 
@@ -325,7 +332,10 @@ impl DtlsInstance for Shim {
     fn poll_output<'a>(&mut self, buf: &'a mut [u8]) -> DtlsOutput<'a> {
         let mut r = self.lock();
         if let Some((material, profile)) = r.keying.take() {
-            return DtlsOutput::KeyingMaterial(KeyingMaterial::new(&material), profile);
+            let keying = KeyingMaterial::new(&material);
+            #[cfg(test)]
+            crate::zeroise_tests::upstream(&keying);
+            return DtlsOutput::KeyingMaterial(keying, profile);
         }
         if r.connected_owed {
             r.connected_owed = false;
@@ -384,6 +394,8 @@ impl DtlsInstance for Shim {
         }
         let mut b = r.spare_seal.pop().unwrap_or_default();
         b.extend_from_slice(data);
+        #[cfg(test)]
+        crate::zeroise_tests::owned(&b);
         r.to_seal.push_back(b);
         Ok(())
     }
