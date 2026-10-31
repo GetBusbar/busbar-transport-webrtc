@@ -44,11 +44,12 @@ use busbar_contract::abi::transport::{
     ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
     FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
-    HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
-    UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    CANCEL_NOTHING_MOVED, EMIT_TEXT, FACT_ACCEPTS, FACT_DIALS, FRAME_PIECE_SIZE, FRAMING_DATAGRAM,
+    HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
+    PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME,
+    PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_FRAMER, SIDE_ACCEPT,
+    SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MAX_MESSAGE};
@@ -70,12 +71,14 @@ const CLAIMS: &[Claim] = &[{
     c
 }];
 
-/// The transport kind's tail: a datagram framer, composing over nothing (the port is the host's).
+/// The transport kind's tail: a datagram framer, composing over nothing (the port is the host's),
+/// whose framings begin accepted or dialled (never detached or adopted).
 const TAIL: TransportTail = {
     let mut t = TransportTail::EMPTY.with_claim_rows(CLAIMS);
     t.role = ROLE_FRAMER;
     t.framing = FRAMING_DATAGRAM;
     t.frame_piece_size = FRAME_PIECE_SIZE;
+    t.facts = FACT_ACCEPTS | FACT_DIALS;
     t
 };
 
