@@ -19,22 +19,21 @@
 //!   writable again with a [`PIECE_WRITABLE`] piece; a channel that cannot carry a message fails
 //!   alone, with a [`PIECE_STREAM_FAILED`] piece.
 //! * `timer`: the clock; `finish`: the association closes.
-//! * `locate`, `encode`, `refuse`, `detach`, `adopt`: FAILED with the reason (no authority to dial,
-//!   no envelope, no upgrade); every carrier op: REFUSED (`not_served!`).
+//! * `locate`, `encode`, `refuse`, `detach`, `adopt` (no authority to dial, no envelope, no
+//!   hand-off) and every carrier op: REFUSED (`not_served!`).
 //!
 //! A full host buffer is back-pressure: READY with [`YIELD_MORE`], and the re-call carries no new
 //! bytes. No op pends.
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn};
+use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::transport::settings_reading;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
@@ -461,47 +460,16 @@ busbar_contract::not_served! {
     NoShut(ShutIn => OutHead) "shut";
     /// `arrival`: the port is the host's.
     NoArrival(ArrivalIn => ArrivalOut) "arrival";
-}
-
-/// A framer op this framer has no use for: FAILED with its reason.
-pub(crate) struct Unused<I>(PhantomData<I>);
-
-/// Why each unused op is refused.
-pub(crate) trait Why {
-    /// The reason.
-    const WHY: &'static str;
-}
-
-impl Why for EncodeIn {
-    const WHY: &'static str = "encode: an association carries no envelope";
-}
-impl Why for RefuseIn {
-    const WHY: &'static str = "refuse: an association's refusal is the signalling unit's";
-}
-impl Why for AdoptIn {
-    const WHY: &'static str = "adopt: an association is begun at its rendezvous, never adopted";
-}
-
-impl<I: AbiIn + Why> SafeSlot for Unused<I> {
-    type In = I;
-    type Out = FramerOut;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, I>, mut o: Out<'_, FramerOut>) -> Outcome {
-        o.fail(Refusal::failed(I::WHY))
-    }
-}
-
-/// `locate`: FAILED. An association's far end comes from its description, judged by the host.
-pub(crate) struct Locate;
-impl SafeSlot for Locate {
-    type In = LocateIn;
-    type Out = LocateOut;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, LocateIn>, mut o: Out<'_, LocateOut>) -> Outcome {
-        o.fail(Refusal::failed(
-            "locate: an association's far end comes from its description, not a target",
-        ))
-    }
+    /// `locate`: an association's far end comes from its description, judged by the host.
+    NoLocate(LocateIn => LocateOut) "locate";
+    /// `encode`: an association carries no envelope.
+    NoEncode(EncodeIn => FramerOut) "encode";
+    /// `refuse`: an association's refusal is the signalling unit's.
+    NoRefuse(RefuseIn => FramerOut) "refuse";
+    /// `detach`: an association is never handed to another framer.
+    NoDetach(FramingIn => FramerOut) "detach";
+    /// `adopt`: an association is begun at its rendezvous, never adopted.
+    NoAdopt(AdoptIn => FramerOut) "adopt";
 }
 
 /// What a dialling framing's opening fields offer.
@@ -759,19 +727,6 @@ impl SafeSlot for Timer {
     }
 }
 
-/// `detach`: FAILED (an association is never handed to another framer).
-pub(crate) struct Detach;
-impl SafeSlot for Detach {
-    type In = FramingIn;
-    type Out = FramerOut;
-    type State = State;
-    fn call(_: Instance<'_, State>, _: Lent<'_, FramingIn>, mut o: Out<'_, FramerOut>) -> Outcome {
-        o.fail(Refusal::failed(
-            "detach: an association is never handed to another framer",
-        ))
-    }
-}
-
 /// `finish`: the association closes, its last datagrams answered; the framing is forgotten.
 pub(crate) struct Finish;
 impl SafeSlot for Finish {
@@ -819,15 +774,15 @@ busbar_contract::plugin_door! {
         flush: Safe<NoFlush>,
         shut: Safe<NoShut>,
         arrival: Safe<NoArrival>,
-        locate: Safe<Locate>,
+        locate: Safe<NoLocate>,
         begin: Safe<Begin>,
         ingest: Safe<Ingest>,
         emit: Safe<Emit>,
-        encode: Safe<Unused<EncodeIn>>,
-        refuse: Safe<Unused<RefuseIn>>,
+        encode: Safe<NoEncode>,
+        refuse: Safe<NoRefuse>,
         finish: Safe<Finish>,
-        detach: Safe<Detach>,
-        adopt: Safe<Unused<AdoptIn>>,
+        detach: Safe<NoDetach>,
+        adopt: Safe<NoAdopt>,
         timer: Safe<Timer>,
     },
 }
