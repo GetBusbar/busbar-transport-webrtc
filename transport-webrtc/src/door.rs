@@ -81,11 +81,32 @@ const TAIL: TransportTail = {
     t
 };
 
+/// THE AUTH POINTS THIS DOOR OFFERS: none. An association has no head and the door makes no auth
+/// call, so the record is stated EMPTY (ruling R2): with no record the host would read
+/// `{Head, HeadBody}` and admit a guest line whose auth needs a point no association honours.
+const OFFERED_POINTS: [u8; 4] = 0_u32.to_le_bytes();
+
+busbar_contract::statement_extensions!(
+    /// The Statement's extensions: this plugin's whole `declares` document, and the auth points it
+    /// offers (none).
+    EXTENSIONS: [
+        (
+            busbar_contract::abi::mechanism::extensions::EXT_DECLARES,
+            include_bytes!("../declares.json")
+        ),
+        (
+            busbar_contract::abi::transport::EXT_OFFERED_POINTS,
+            &OFFERED_POINTS
+        ),
+    ]
+);
+
 /// The door's Statement.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
     claims: CLAIM_NAMES.as_ptr(),
     claims_len: CLAIM_NAMES.len(),
+    extensions: EXTENSIONS,
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
 };
 
