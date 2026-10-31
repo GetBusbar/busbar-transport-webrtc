@@ -61,8 +61,11 @@ pub const PROFILE_AEAD_AES_128_GCM: u32 = 0x0007;
 /// `SRTP_AEAD_AES_256_GCM`.
 pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 
-/// The most messages held for a channel not yet open, and the most pieces or routes queued.
+/// The most messages held for one channel (not yet open, or with no room in the stack).
 const MAX_HELD: usize = 256;
+/// The most routes, and the most data pieces, queued for the host at once: past it a route is
+/// dropped (a datagram network loses them anyway) and a data piece fails its stream.
+const MAX_QUEUED: usize = MAX_HELD * 4;
 
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
 /// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
@@ -77,6 +80,9 @@ const MAX_CANDIDATES: usize = 32;
 /// The largest message a channel carries: the media stack's send buffer (its default), which a
 /// larger message could never enter.
 pub const MAX_MESSAGE: usize = 128 * 1024;
+/// Why an empty channel message fails its stream: the media stack cannot send one (its SCTP writes
+/// no chunk for it, yet spends the ordered stream's next sequence number, wedging the channel).
+const EMPTY_REFUSED: &str = "an empty message, which the media stack cannot send";
 /// A channel's held messages at which its stream is FULL (the host emits nothing more on it until
 /// its writable piece) ...
 const HIGH_WATER: usize = 64;
@@ -186,6 +192,8 @@ pub struct Framing {
     opened_buf: Zeroizing<Vec<u8>>,
     local: Option<SocketAddr>,
     local_creds: IceCreds,
+    /// The far end's check secret: the key its answers to this end's checks are signed under.
+    remote_secret: Option<Zeroizing<String>>,
     pending: Option<SdpPendingOffer>,
     described: bool,
     paths: HashMap<u32, SocketAddr>,
@@ -196,7 +204,6 @@ pub struct Framing {
     ice: IceConnectionState,
     /// Checks that nominate, by transaction id, and the path each travels.
     nominating: HashMap<[u8; 12], u32>,
-    nominated: u32,
     asked: Option<Request>,
     request: Option<Request>,
     terms: Option<Terms>,
@@ -242,7 +249,11 @@ impl Drop for Framing {
     }
 }
 
+/// One fingerprint octet: exactly two hex digits (RFC 4572 §5), never one digit or a sign.
 fn hex_pair(s: &str) -> Option<u8> {
+    if s.len() != 2 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     u8::from_str_radix(s, 16).ok()
 }
 
@@ -348,7 +359,8 @@ impl Framing {
     ///
     /// # Errors
     ///
-    /// No randomness, or a dialling end with nothing to offer.
+    /// No randomness, a host port's address the media stack takes as no candidate, or a dialling
+    /// end with nothing to offer.
     pub fn begin(
         side: Side,
         certificate: &[u8],
@@ -377,6 +389,7 @@ impl Framing {
             opened_buf: Zeroizing::new(Vec::new()),
             local: None,
             local_creds,
+            remote_secret: None,
             pending: None,
             described: false,
             paths: HashMap::new(),
@@ -386,7 +399,6 @@ impl Framing {
             keyed: false,
             ice: IceConnectionState::New,
             nominating: HashMap::new(),
-            nominated: 0,
             asked: None,
             request: None,
             terms: None,
@@ -408,7 +420,7 @@ impl Framing {
             ended: false,
         };
         if let Some(addr) = local {
-            f.local(addr);
+            f.local(addr)?;
         }
         if side == Side::Dial {
             if opening.channels.is_empty() && !opening.audio {
@@ -474,23 +486,45 @@ impl Framing {
         out
     }
 
-    /// The host port's own address: the one candidate this end advertises.
-    pub fn local(&mut self, addr: SocketAddr) {
+    /// The host port's own address: the one candidate this end advertises, once.
+    ///
+    /// # Errors
+    ///
+    /// An address the media stack takes as no host candidate (unspecified, multicast and the
+    /// like): advertising it would name a candidate its ICE agent never holds.
+    pub fn local(&mut self, addr: SocketAddr) -> Result<(), Failed> {
         if self.local.is_some() {
-            return;
+            return Ok(());
         }
+        let c = Candidate::host(addr, "udp").map_err(|_| {
+            format!("the host port's address {addr} is no candidate the media stack takes")
+        })?;
+        self.rtc.add_local_candidate(c);
         self.local = Some(addr);
-        if let Ok(c) = Candidate::host(addr, "udp") {
-            self.rtc.add_local_candidate(c);
-        }
+        Ok(())
     }
 
     /// Paths the host knows.
     pub fn paths(&mut self, paths: impl IntoIterator<Item = (u32, SocketAddr)>) {
         for (path, addr) in paths {
-            if path != 0 {
-                self.paths.insert(path, addr);
-                self.addrs.insert(addr, path);
+            self.point(path, addr);
+        }
+    }
+
+    /// Path `path` is at `addr` (path `0` is none): an address it pointed at before, or a path
+    /// `addr` belonged to before, is forgotten, so the two maps hold only what is current.
+    fn point(&mut self, path: u32, addr: SocketAddr) {
+        if path == 0 {
+            return;
+        }
+        if let Some(old) = self.paths.insert(path, addr) {
+            if old != addr && self.addrs.get(&old) == Some(&path) {
+                self.addrs.remove(&old);
+            }
+        }
+        if let Some(prev) = self.addrs.insert(addr, path) {
+            if prev != path && self.paths.get(&prev) == Some(&addr) {
+                self.paths.remove(&prev);
             }
         }
     }
@@ -529,6 +563,7 @@ impl Framing {
             }
         }
         self.settled = true;
+        self.remote_secret = Some(remote_secret.clone());
         self.terms = Some(Terms {
             initiates: initiates(text),
             local_user: self.local_creds.ufrag.clone(),
@@ -625,10 +660,7 @@ impl Framing {
         if self.failed.is_some() || bytes.is_empty() {
             return;
         }
-        if path != 0 {
-            self.paths.insert(path, from);
-            self.addrs.insert(from, path);
-        }
+        self.point(path, from);
         match lane {
             Lane::Secured => {
                 // Application data waits for peer verification.
@@ -655,12 +687,22 @@ impl Framing {
                     Some(Check::Success { txid })
                         if self.side == Side::Dial && self.nominating.get(&txid) == Some(&path) =>
                     {
-                        self.nominating.remove(&txid);
+                        // The stack's verdict on the answer is not observable: it counts only when
+                        // its integrity verifies under the far end's check secret.
+                        let genuine = self
+                            .remote_secret
+                            .as_ref()
+                            .is_some_and(|k| stun::integrity_holds(bytes, k.as_bytes()));
+                        if genuine {
+                            self.nominating.remove(&txid);
+                        }
                         self.feed(from, bytes, now);
-                        if matches!(
-                            self.ice,
-                            IceConnectionState::Connected | IceConnectionState::Completed
-                        ) {
+                        if genuine
+                            && matches!(
+                                self.ice,
+                                IceConnectionState::Connected | IceConnectionState::Completed
+                            )
+                        {
                             self.nominate(path);
                         }
                         return;
@@ -702,7 +744,6 @@ impl Framing {
     }
 
     fn nominate(&mut self, path: u32) {
-        self.nominated = path;
         let want = if self.bound == 0 {
             Request::Bind(path)
         } else if self.bound != path {
@@ -720,7 +761,8 @@ impl Framing {
     ///
     /// # Errors
     ///
-    /// A stream this framing does not carry, or a media frame the stack refuses.
+    /// A stream this framing does not carry, or a media line that carries no Opus. (What a stream
+    /// cannot carry fails that stream alone: its failure piece, never an error.)
     pub fn emit(
         &mut self,
         stream: u64,
@@ -729,6 +771,11 @@ impl Framing {
         now: Instant,
     ) -> Result<(), Failed> {
         if let Some(mid) = self.media_by_stream.get(&stream).copied() {
+            if bytes.is_empty() {
+                // An empty frame is no Opus packet and no RTP packet carries it: real-time media
+                // is lossy, so it is dropped and the line carries on.
+                return Ok(());
+            }
             if !(self.verified && self.keyed) || self.failed_sids.contains(&stream) {
                 return Ok(());
             }
@@ -749,7 +796,7 @@ impl Framing {
                 pt,
                 now,
                 MediaTime::new(at, Frequency::FORTY_EIGHT_KHZ),
-                bytes.to_vec(),
+                bytes,
             ) {
                 self.fail_stream(stream, &format!("the media frame was refused: {e}"));
             }
@@ -757,10 +804,21 @@ impl Framing {
             return Ok(());
         }
         let Some(id) = self.channel_by_stream.get(&stream).copied() else {
+            if self.stream_ended(stream) {
+                // Its END piece told the host; an emit racing the far end's close is dropped.
+                return Ok(());
+            }
             return Err(format!("no stream {stream} on this association"));
         };
         if self.failed_sids.contains(&stream) {
             // The host was told; what it still emits there is dropped.
+            return Ok(());
+        }
+        if bytes.is_empty() {
+            // The stack writes no chunk for an empty message yet spends the ordered stream's next
+            // sequence number: every later message would wait for it forever.
+            self.fail_stream(stream, EMPTY_REFUSED);
+            self.drain(now);
             return Ok(());
         }
         if bytes.len() > MAX_MESSAGE {
@@ -801,7 +859,8 @@ impl Framing {
     /// Stream `stream` fails, alone: its held messages are dropped and the layer above gets its
     /// failure piece, once. The association and every other stream carry on.
     pub fn fail_stream(&mut self, stream: u64, why: &str) {
-        if !self.failed_sids.insert(stream) {
+        // A stream this framing no longer carries ended already: nothing of it follows its end.
+        if !self.carries(stream) || !self.failed_sids.insert(stream) {
             return;
         }
         self.held.remove(&stream);
@@ -817,10 +876,24 @@ impl Framing {
         });
     }
 
+    /// Whether this framing carries `stream` (a data channel or a media line).
+    #[must_use]
+    pub fn carries(&self, stream: u64) -> bool {
+        self.channel_by_stream.contains_key(&stream) || self.media_by_stream.contains_key(&stream)
+    }
+
     /// Whether `stream` is FULL: the host emits nothing more on it until its writable piece.
     #[must_use]
     pub fn stream_full(&self, stream: u64) -> bool {
         self.full.contains(&stream)
+    }
+
+    /// Whether `stream` was a data channel that has since closed (its END piece told the host):
+    /// what the host still emits there, racing the far end's close, is dropped as for a failed
+    /// stream. Channel streams are numbered in order and never reused, so no record is kept.
+    #[must_use]
+    pub fn stream_ended(&self, stream: u64) -> bool {
+        (1..self.next_channel).contains(&stream) && !self.channel_by_stream.contains_key(&stream)
     }
 
     /// Whether `stream` failed.
@@ -988,7 +1061,7 @@ impl Framing {
     }
 
     fn transmit(&mut self, to: SocketAddr, bytes: Vec<u8>) {
-        if self.routes.len() >= MAX_HELD * 4 {
+        if self.routes.len() >= MAX_QUEUED {
             return;
         }
         if stun::is_stun(&bytes) {
@@ -1059,6 +1132,12 @@ impl Framing {
             }
             Event::ChannelOpen(id, label) => {
                 let s = self.channel_stream(id);
+                // A field value never holds CR or LF: a label with a line break (any UTF-8 is a
+                // label on the wire) would forge field lines, so that channel is refused.
+                if label.contains(['\r', '\n']) {
+                    self.fail_stream(s, "the far end's channel label holds a line break");
+                    return;
+                }
                 self.head(s, &[("label", &label)]);
             }
             Event::ChannelData(d) => {
@@ -1067,13 +1146,16 @@ impl Framing {
                 if !(self.verified && self.keyed) {
                     return;
                 }
-                let s = self.channel_stream(d.id);
+                // A channel that closed (or never opened) carries nothing up.
+                let Some(s) = self.channels.get(&d.id).copied() else {
+                    return;
+                };
                 if self.failed_sids.contains(&s) {
                     return;
                 }
                 // The reliable channel already acknowledged this message to the peer: dropping it
                 // loses it unseen, so the stream that cannot take it fails, loudly, alone.
-                if self.pieces.len() >= MAX_HELD * 4 {
+                if self.pieces.len() >= MAX_QUEUED {
                     self.fail_stream(
                         s,
                         "the data channel's messages outran the host: its queue reached the cap",
@@ -1091,13 +1173,16 @@ impl Framing {
                 });
             }
             Event::ChannelClose(id) => {
-                if let Some(s) = self.channels.get(&id).copied() {
-                    if self.failed_sids.contains(&s) {
+                // The stream ends: the framing carries it no more, so a later emit there is refused
+                // and nothing of it follows its end.
+                if let Some(s) = self.channels.remove(&id) {
+                    self.channel_by_stream.remove(&s);
+                    self.held.remove(&s);
+                    self.full.remove(&s);
+                    if self.failed_sids.remove(&s) {
                         // A failed stream already ended, failed.
                         return;
                     }
-                    self.held.remove(&s);
-                    self.full.remove(&s);
                     self.pieces.push_back(Piece {
                         stream: s,
                         bytes: Vec::new(),
@@ -1117,7 +1202,7 @@ impl Framing {
                 self.head(s, &[("kind", "audio"), ("codec", "opus")]);
             }
             Event::MediaData(d) => {
-                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_HELD * 4 {
+                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_QUEUED {
                     return;
                 }
                 if let Some(s) = self
@@ -1196,22 +1281,20 @@ impl Framing {
         self.ended
     }
 
-    /// The path the far end nominated last, as this framer's ICE agent accepted it.
-    #[must_use]
-    pub fn nominated(&self) -> u32 {
-        self.nominated
+    /// The messages held for `stream`, `(text, bytes)` each, in order: what a test reads of the
+    /// queue.
+    #[cfg(test)]
+    pub(crate) fn held(&self, stream: u64) -> Vec<(bool, Vec<u8>)> {
+        self.held
+            .get(&stream)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
     #[must_use]
     pub fn holds_keying(&self) -> bool {
         self.relay.iter().any(|f| shim::is_keying(f))
-    }
-
-    /// How long until `deadline`, from `now`.
-    #[must_use]
-    pub fn until(deadline: Instant, now: Instant) -> Duration {
-        deadline.saturating_duration_since(now)
     }
 }
 

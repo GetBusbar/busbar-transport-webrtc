@@ -61,14 +61,15 @@ fn red_arm_the_gcm_ciphers_of_the_same_provider_seal_and_open() {
 #[test]
 fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
     let material = [7_u8; 60];
-    for profile in [
-        PROFILE_AES_CM_SHA1_80,
-        PROFILE_AES_CM_SHA1_32,
-        0x0003,
-        0xFFFF,
+    for (profile, why) in [
+        (PROFILE_AES_CM_SHA1_80, AES_CM_REFUSED),
+        (PROFILE_AES_CM_SHA1_32, AES_CM_REFUSED),
+        // Neither AES_CM nor GCM: refused in the words that name what is admitted.
+        (0x0003, crate::shim::PROFILE_REFUSED),
+        (0xFFFF, crate::shim::PROFILE_REFUSED),
     ] {
         let shim = Shim::default();
-        assert_eq!(shim.keyed(&material, profile), Err(AES_CM_REFUSED));
+        assert_eq!(shim.keyed(&material, profile), Err(why));
         assert!(!shim.holds_keying(), "profile {profile:#06x}: nothing held");
     }
     // RED arm: the two AEAD-AES-GCM profiles are taken, at their own lengths.
@@ -156,4 +157,93 @@ fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
         "keying/plaintext bytes in Debug: {out}"
     );
     assert!(out.contains("<redacted"), "no redaction marker: {out}");
+}
+
+/// A CLOSED SHIM SAYS SO (codeaudit shim.rs:370): data sent after the secure session closed is
+/// refused as a closed connection, never "handshake pending", which tells the media stack to keep
+/// it and retry against a session that is over. Before "connected" it is still pending.
+#[test]
+fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
+    use str0m::crypto::dtls::{DtlsImplError, DtlsInstance};
+    let mut shim = Shim::default();
+    assert!(matches!(
+        shim.send_application_data(b"early"),
+        Err(DtlsImplError::HandshakePending)
+    ));
+    shim.handle_packet(&crate::shim::CONNECTED_FRAME)
+        .expect("the relay is taken");
+    assert!(shim.send_application_data(b"open").is_ok());
+    shim.close().expect("closes");
+    assert!(matches!(
+        shim.send_application_data(b"late"),
+        Err(DtlsImplError::ConnectionClosed)
+    ));
+}
+
+/// A PROFILE THAT IS NOT AES_CM IS NOT CALLED AES_CM (codeaudit shim.rs:259): keying material
+/// under a profile code the framer does not know (or the NULL-cipher ones) is refused in words that
+/// name what is admitted, at the keying frame and at the shim alike; the two AES_CM codes keep
+/// theirs. RED before the fix: every unknown code was refused as "SRTP AES_CM".
+#[test]
+fn an_unknown_protection_profile_is_not_called_aes_cm() {
+    let why = "the keying material's protection profile is not AEAD-AES-GCM";
+    for code in [0x0005_u32, 0x0006, 0x1234] {
+        let material = [7_u8; 56];
+        assert_eq!(
+            crate::shim::keying_frame(&material, code).err(),
+            Some(why),
+            "{code:#x}"
+        );
+        assert_eq!(
+            Shim::default().keyed(&material, code),
+            Err(why),
+            "{code:#x}"
+        );
+    }
+    for code in [PROFILE_AES_CM_SHA1_80, PROFILE_AES_CM_SHA1_32] {
+        assert_eq!(
+            crate::shim::keying_frame(&[7_u8; 56], code).err(),
+            Some(AES_CM_REFUSED)
+        );
+    }
+}
+
+/// THE AEAD-AES-256-GCM PROFILE'S KEY DERIVATION BLOCK IS AES-256 (codeaudit tests crypto.rs:70):
+/// FIPS-197 Appendix C.3. Under AES-128 a 32-byte key derives nothing, and every association keyed
+/// under that profile would fail against a real peer (two ends of this framer would agree).
+#[test]
+fn the_256_bit_key_derivation_block_is_aes_256() {
+    let key: Vec<u8> = (0..32).collect();
+    let input: Vec<u8> = (0..16).map(|i| i * 0x11).collect();
+    let mut out = [0_u8; 16];
+    Ring.srtp_aes_256_ecb_round(&key, &input, &mut out);
+    assert_eq!(
+        out,
+        [
+            0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49,
+            0x60, 0x89
+        ]
+    );
+}
+
+/// THE DIGESTS ARE THE STANDARD ONES (codeaudit tests crypto.rs:357): SHA-256 (RFC 6234 "abc"),
+/// which the description's fingerprint states, and HMAC-SHA1 (RFC 2202 case 1), which signs and
+/// checks every connectivity check.
+#[test]
+fn the_digests_meet_their_vectors() {
+    assert_eq!(
+        Ring.sha256(b"abc"),
+        [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad
+        ]
+    );
+    assert_eq!(
+        Ring.sha1_hmac(&[0x0b; 20], &[b"Hi ", b"There"]),
+        [
+            0xb6, 0x17, 0x31, 0x86, 0x55, 0x05, 0x72, 0x64, 0xe2, 0x8b, 0xc0, 0xb6, 0xfb, 0x37,
+            0x8c, 0x8e, 0xf1, 0x46, 0xbe, 0x00
+        ]
+    );
 }
