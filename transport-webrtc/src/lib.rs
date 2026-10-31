@@ -20,17 +20,21 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod claims;
 pub mod crypto;
 pub mod door;
 pub mod framing;
+mod meta;
 pub mod shim;
 pub mod stun;
 
 /// The transport axis entry: the row's key, the layers it declares and its door.
 pub mod linked {
-    pub use crate::door::{door, KEY, MACRO_DOOR};
+    pub use crate::door::{door, MACRO_DOOR};
+    /// The row's registry key.
+    pub const KEY: &str = crate::meta::KEY;
     /// The layers this wire declares it can be built over: none (the datagram port is the host's).
-    pub const COMPOSES_OVER: &[&str] = &[];
+    pub const COMPOSES_OVER: &[&str] = crate::meta::COMPOSES_OVER;
     /// Whether this wire carries sessions: yes, an association is one (its claim row's `session`).
-    pub const SESSION: bool = true;
+    pub const SESSION: bool = crate::meta::SESSION;
 }
