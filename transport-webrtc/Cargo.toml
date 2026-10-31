@@ -4,9 +4,12 @@ name = "busbar-transport-webrtc"
 version = "1.6.0"
 publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
 edition = "2021"
-rust-version = "1.97"
+rust-version.workspace = true
 description = "The webrtc framer: ICE, SRTP and SCTP over the host's datagram port and secure layer, sans-IO. It holds no DTLS state; the host's secure layer hands it the exported keying material."
 license = "Apache-2.0"
+
+[lints]
+workspace = true
 
 [lib]
 # rlib: the LINKED door (`linked::door`), which a busbar build names as a compiled-in row. The
