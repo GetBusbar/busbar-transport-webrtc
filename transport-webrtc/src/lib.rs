@@ -12,7 +12,7 @@
 //!
 //! ## One entry: the door
 //!
-//! [`door::door`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
+//! [`door()`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
 //! in (the sibling `busbar-transport-webrtc-plugin` cdylib exports it as its image's one symbol,
 //! `export_door!`). This crate exports nothing, so linking it adds no door symbol and it holds no
 //! `unsafe` at all.
@@ -21,12 +21,18 @@
 #![deny(missing_docs)]
 
 mod claims;
-pub mod crypto;
-pub mod door;
-pub mod framing;
+mod door;
 mod meta;
+mod stun;
+
+// Public for this repo's allocator-witness tests alone (`tests/zeroise*.rs`, `tests/hot_path_alloc.rs`
+// install their own global allocator, so they cannot run as unit tests): no busbar build names them.
+pub mod crypto;
+pub mod framing;
 pub mod shim;
-pub mod stun;
+
+/// The door: the one entry, linked here and exported by the dropped-in build alike.
+pub use door::door;
 
 /// The transport axis entry: the row's key, the layers it declares and its door.
 pub mod linked {
