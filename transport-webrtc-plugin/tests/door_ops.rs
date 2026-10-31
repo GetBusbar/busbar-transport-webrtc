@@ -303,7 +303,7 @@ fn a_host_path_whose_address_does_not_parse_is_refused() {
     let a = begun(&mut host, &[b"events"]);
     assert_eq!(
         (a.outcome, a.why.as_str()),
-        (Outcome::Failed, "the host's path 1 names no address")
+        (Outcome::Failed, "begin: the host's path 1 names no address")
     );
 }
 
@@ -350,12 +350,11 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
             last = timer(&p, &mut host, token);
         }
     }
-    assert_eq!(
-        (last.outcome, last.why.as_str()),
-        (
-            Outcome::Failed,
-            "a datagram the media stack sends does not fit the host's wire buffer"
-        ),
+    // The op that answered it opens the words (sibling alignment D7).
+    let why = "a datagram the media stack sends does not fit the host's wire buffer";
+    assert_eq!(last.outcome, Outcome::Failed, "{last:?}");
+    assert!(
+        [format!("ingest: {why}"), format!("timer: {why}")].contains(&last.why),
         "{last:?}"
     );
 }
@@ -481,4 +480,33 @@ fn a_failing_op_racing_finish_never_deadlocks() {
     finished
         .recv_timeout(Duration::from_secs(120))
         .expect("a failing op and finish deadlocked");
+}
+
+/// EVERY REFUSAL OPENS WITH ITS OP (sibling alignment D7; AUDIT-RULES `<op>: <reason>`): an op on
+/// a framing that is no more, and a framing error forwarded from an op, say which op answered.
+/// RED before: `no such framing` and the framing's own words came bare.
+#[test]
+fn every_refusal_opens_with_its_op() {
+    let p = door();
+    let mut host = Host::new(4096, 16 * 1024);
+    let gone = 4242;
+    assert_eq!(
+        emit(&p, &mut host, gone, 1, b"x").why,
+        "emit: no such framing"
+    );
+    assert_eq!(timer(&p, &mut host, gone).why, "timer: no such framing");
+    assert_eq!(
+        ingest(&p, &mut host, gone, LANE_RENDEZVOUS, b"x").why,
+        "ingest: no such framing"
+    );
+    let token = begin(&p, &mut host, &[b"events"]).framing;
+    assert_eq!(
+        emit(&p, &mut host, token, 99, b"x").why,
+        "emit: no stream 99 on this association"
+    );
+    let token = begin(&p, &mut host, &[b"events"]).framing;
+    assert_eq!(
+        ingest(&p, &mut host, token, LANE_RENDEZVOUS, b"\xff").why,
+        "ingest: a description that is not text"
+    );
 }
