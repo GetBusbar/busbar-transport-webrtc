@@ -30,6 +30,8 @@ cargo build --release -p busbar-transport-webrtc-plugin
 cargo test --workspace --locked
 ```
 
+The browser interop cell (`testing/webrtc-conformance`: headless Chromium and Firefox against busbar's terminating datagram path) is busbar's `webrtc-browser` conformance suite (`conformance/registry.toml` in busbar). Its subject mounts busbar's own `doors.rs` and drives the connector's datagram path, so it runs from a busbar checkout under that suite, not from this repo's `ci.yml` (whose `extra_test` is empty for that reason).
+
 ## Known residual: upstream copies of secrets are not zeroised
 
 This plugin zeroises the SRTP keying material, the keys derived from it and the ICE password that its own types hold (`zeroize`, with tests). The published `str0m`, `dimpl` and `ring` crates it builds on do not zeroise their internal copies of these secrets when they drop them, so copies may remain in freed memory until it is reused. Exploiting this needs read access to the process's memory. It is a known residual risk, not fixed here. The test `known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed` in `transport-webrtc/tests/zeroise.rs` asserts it as known (it fails once upstream starts zeroising), and `keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised` gates the plugin's own copies.
