@@ -47,5 +47,8 @@ fn the_statement_offers_no_auth_point() {
         Some(&[0_u8; 4][..]),
         "an explicit empty record"
     );
-    assert_eq!(check_offered_points(&read.extensions.bytes).map(|p| p.0), Ok(0));
+    assert_eq!(
+        check_offered_points(&read.extensions.bytes).map(|p| p.0),
+        Ok(0)
+    );
 }
