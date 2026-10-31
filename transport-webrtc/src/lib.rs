@@ -17,7 +17,8 @@
 //! `export_door!`). This crate exports nothing, so linking it adds no door symbol and it holds no
 //! `unsafe` at all.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(test, deny(unsafe_code))]
 #![deny(missing_docs)]
 
 mod claims;
@@ -25,8 +26,12 @@ mod door;
 mod meta;
 mod stun;
 
-// Public for this repo's allocator-witness tests alone (`tests/zeroise*.rs`, `tests/hot_path_alloc.rs`
-// install their own global allocator, so they cannot run as unit tests): no busbar build names them.
+#[cfg(test)]
+#[allow(unsafe_code)] // The test allocator reads only explicitly registered initialized payloads.
+#[path = "tests/zeroise_tests.rs"]
+mod zeroise_tests;
+
+// Public for this repo's integration tests: no busbar build names them.
 pub mod crypto;
 pub mod framing;
 pub mod shim;
