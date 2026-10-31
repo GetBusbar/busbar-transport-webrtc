@@ -183,10 +183,44 @@ fn hold_torn(slot: &Mutex<Option<Held1>>) -> (MutexGuard<'_, Option<Held1>>, boo
     }
 }
 
-fn framings<'a>(i: &Instance<'a, State>) -> Result<&'a Framings, Refusal> {
+/// One framer op's fixed texts, each opening with the op's name (`<op>: `).
+struct OpTexts {
+    /// What a framing error forwarded from this op opens with.
+    prefix: &'static str,
+    no_instance: &'static str,
+    no_framing: &'static str,
+    torn: &'static str,
+}
+
+macro_rules! op_texts {
+    ($op:literal) => {
+        OpTexts {
+            prefix: concat!($op, ": "),
+            no_instance: concat!($op, ": no open instance"),
+            no_framing: concat!($op, ": no such framing"),
+            torn: concat!(
+                $op,
+                ": the association's state was torn by a panic: it is forgotten"
+            ),
+        }
+    };
+}
+
+const BEGIN: OpTexts = op_texts!("begin");
+const INGEST: OpTexts = op_texts!("ingest");
+const EMIT: OpTexts = op_texts!("emit");
+const TIMER: OpTexts = op_texts!("timer");
+const FINISH: OpTexts = op_texts!("finish");
+
+/// `why`, a framing's own words, as op `t`'s refusal.
+fn refused(t: &OpTexts, why: &str) -> Refusal {
+    Refusal::failed(format!("{}{why}", t.prefix))
+}
+
+fn framings<'a>(i: &Instance<'a, State>, t: &OpTexts) -> Result<&'a Framings, Refusal> {
     i.get()
         .map(Held::life)
-        .ok_or_else(|| Refusal::failed("no open instance"))
+        .ok_or_else(|| Refusal::failed(t.no_instance))
 }
 
 fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
@@ -393,28 +427,27 @@ fn answer(
 /// answers besides.
 fn with(
     inst: &Instance<'_, State>,
+    t: &OpTexts,
     token: u64,
     sink: Lent<'_, FramerSink>,
     lane: Option<Lent<'_, DatagramLane>>,
     o: &mut Out<'_, FramerOut>,
     op: impl FnOnce(&mut Held1, Instant) -> Result<u32, String>,
 ) -> Outcome {
-    let s = match framings(inst) {
+    let s = match framings(inst, t) {
         Ok(s) => s,
         Err(r) => return o.fail(r),
     };
     let Some(slot) = s.slot(token) else {
-        return o.fail(Refusal::failed("no such framing"));
+        return o.fail(Refusal::failed(t.no_framing));
     };
     let (mut held, torn) = hold_torn(&slot);
     let Some(h) = held.as_mut() else {
         if torn {
             s.lock().remove(&token);
-            return o.fail(Refusal::failed(
-                "the association's state was torn by a panic: it is forgotten",
-            ));
+            return o.fail(Refusal::failed(t.torn));
         }
-        return o.fail(Refusal::failed("no such framing"));
+        return o.fail(Refusal::failed(t.no_framing));
     };
     let now_ns = sink.now_monotonic_ns;
     let now = h.at(now_ns);
@@ -437,7 +470,7 @@ fn with(
         Err(why) => {
             *held = None;
             s.lock().remove(&token);
-            o.fail(Refusal::failed(why))
+            o.fail(refused(t, &why))
         }
     }
 }
@@ -514,7 +547,7 @@ impl SafeSlot for Begin {
     type Out = FramerOut;
     type State = State;
     fn call(inst: Instance<'_, State>, i: Lent<'_, BeginIn>, mut o: Out<'_, FramerOut>) -> Outcome {
-        let s = match framings(&inst) {
+        let s = match framings(&inst, &BEGIN) {
             Ok(s) => s,
             Err(r) => return o.fail(r),
         };
@@ -548,7 +581,7 @@ impl SafeSlot for Begin {
         };
         let f = match Framing::begin(side, cert, Some(local), &opening, base) {
             Ok(f) => f,
-            Err(why) => return o.fail(Refusal::failed(why)),
+            Err(why) => return o.fail(refused(&BEGIN, &why)),
         };
         let mut h = Held1 {
             f,
@@ -558,10 +591,10 @@ impl SafeSlot for Begin {
             partial: None,
         };
         if let Err(why) = host_state(&mut h, lane, base) {
-            return o.fail(Refusal::failed(why));
+            return o.fail(refused(&BEGIN, &why));
         }
         if let Err(why) = answer(&mut h, sink, Some(lane), now_ns, &mut o) {
-            return o.fail(Refusal::failed(why));
+            return o.fail(refused(&BEGIN, &why));
         }
         let token = s.next.fetch_add(1, Ordering::Relaxed);
         s.lock().insert(token, Arc::new(Mutex::new(Some(h))));
@@ -588,6 +621,7 @@ impl SafeSlot for Ingest {
         let ended = i.end != 0;
         with(
             &inst,
+            &INGEST,
             i.framing,
             i.field(|x| &x.sink),
             Some(lane),
@@ -600,7 +634,7 @@ impl SafeSlot for Ingest {
                         LANE_RENDEZVOUS => h.f.rendezvous(bytes, now)?,
                         LANE_CLEAR | LANE_SECURED => {
                             let from = addr(lane.field(|l| &l.path_addr))
-                                .ok_or("ingest: a datagram with no address")?;
+                                .ok_or("a datagram with no address")?;
                             let l = if lane.lane == LANE_CLEAR {
                                 Lane::Clear
                             } else {
@@ -608,7 +642,7 @@ impl SafeSlot for Ingest {
                             };
                             h.f.datagram(lane.path, from, l, bytes, now);
                         }
-                        _ => return Err("ingest: bytes on no lane".into()),
+                        _ => return Err("bytes on no lane".into()),
                     }
                 }
                 if ended {
@@ -633,6 +667,7 @@ impl SafeSlot for Emit {
         let stream = i.stream;
         with(
             &inst,
+            &EMIT,
             i.framing,
             i.field(|x| &x.sink),
             i.lane(),
@@ -715,6 +750,7 @@ impl SafeSlot for Timer {
     ) -> Outcome {
         with(
             &inst,
+            &TIMER,
             i.framing,
             i.field(|x| &x.sink),
             i.lane(),
@@ -738,7 +774,7 @@ impl SafeSlot for Finish {
         i: Lent<'_, FinishIn>,
         mut o: Out<'_, FramerOut>,
     ) -> Outcome {
-        let s = match framings(&inst) {
+        let s = match framings(&inst, &FINISH) {
             Ok(s) => s,
             Err(r) => return o.fail(r),
         };
@@ -746,7 +782,7 @@ impl SafeSlot for Finish {
         // way round.
         let slot = s.lock().remove(&i.framing);
         let Some(mut h) = slot.and_then(|slot| hold(&slot).take()) else {
-            return o.fail(Refusal::failed("finish: no such framing"));
+            return o.fail(Refusal::failed(FINISH.no_framing));
         };
         let sink = i.field(|x| &x.sink);
         let now_ns = sink.now_monotonic_ns;
