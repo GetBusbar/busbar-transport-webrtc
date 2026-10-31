@@ -2,8 +2,8 @@
   "settings": {},
   "transport": {
     "datagram": {
-      "locate": "failed",
-      "encode": "failed",
+      "locate": "refused",
+      "encode": "refused",
       "opening": [["channel", "events"]],
       "offer": {
         "text": true,

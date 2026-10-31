@@ -4,7 +4,9 @@
 //! The few facts of a connectivity check the framer reads itself (RFC 8489 framing, RFC 8445
 //! attributes): its class, its transaction id and whether it nominates. Integrity is the media
 //! stack's ICE agent's to judge (it answers only a check whose MESSAGE-INTEGRITY verifies), and the
-//! host's, independently; this module judges nothing.
+//! host's, independently. The one verdict judged here is the dialling end's: whether a Binding
+//! success it acts on carries a MESSAGE-INTEGRITY that verifies ([`integrity_holds`]), since the
+//! stack's own verdict on a response is not observable.
 
 /// The STUN magic cookie.
 const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
@@ -14,6 +16,8 @@ const BINDING_REQUEST: u16 = 0x0001;
 const BINDING_SUCCESS: u16 = 0x0101;
 /// USE-CANDIDATE (RFC 8445 §16.1).
 const USE_CANDIDATE: u16 = 0x0025;
+/// MESSAGE-INTEGRITY (RFC 8489 §14.5): an HMAC-SHA1, 20 bytes.
+const MESSAGE_INTEGRITY: u16 = 0x0008;
 
 /// What a datagram is, as far as nomination goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +36,9 @@ pub enum Check {
     },
 }
 
-/// Read `datagram` as a Binding request or success response; `None` for anything else.
+/// Read `datagram` as a Binding request or success response; `None` for anything else, a message
+/// RFC 8489 §5 does not frame among it (a length that is no multiple of 4, or not the datagram's
+/// size less the header).
 #[must_use]
 pub fn read(datagram: &[u8]) -> Option<Check> {
     let head = datagram.get(..20)?;
@@ -41,21 +47,26 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
     }
     let kind = u16::from_be_bytes([head[0], head[1]]);
     let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
-    let body = datagram.get(20..20 + len)?;
+    if len % 4 != 0 || datagram.len() != 20 + len {
+        return None;
+    }
+    let body = &datagram[20..];
     let mut txid = [0_u8; 12];
     txid.copy_from_slice(&head[8..20]);
     match kind {
         BINDING_REQUEST => Some(Check::Request {
             txid,
-            nominates: attributes(body).any(|t| t == USE_CANDIDATE),
+            // USE-CANDIDATE has no value (RFC 8445 §16.1): one that carries one nominates nothing.
+            nominates: attributes(body).any(|a| a == (USE_CANDIDATE, 0)),
         }),
         BINDING_SUCCESS => Some(Check::Success { txid }),
         _ => None,
     }
 }
 
-/// The attribute types of a STUN body, in order, stopping at the first malformed one.
-fn attributes(body: &[u8]) -> impl Iterator<Item = u16> + '_ {
+/// The attributes of a STUN body, `(type, value length)` each, in order, stopping at the first
+/// malformed one.
+fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
     let mut at = 0_usize;
     std::iter::from_fn(move || {
         let h = body.get(at..at + 4)?;
@@ -66,8 +77,43 @@ fn attributes(body: &[u8]) -> impl Iterator<Item = u16> + '_ {
         if at > body.len() {
             return None;
         }
-        Some(t)
+        Some((t, len))
     })
+}
+
+/// Whether `datagram`'s MESSAGE-INTEGRITY verifies under the short-term credential `key` (RFC 8489
+/// §14.5: HMAC-SHA1 over the message up to the attribute, its header's length counting through
+/// it). `false` for a message without one.
+#[must_use]
+pub fn integrity_holds(datagram: &[u8], key: &[u8]) -> bool {
+    let Some(head) = datagram.get(..20) else {
+        return false;
+    };
+    let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
+    let Some(body) = datagram.get(20..20 + len) else {
+        return false;
+    };
+    let mut at = 0_usize;
+    while let Some(h) = body.get(at..at + 4) {
+        let t = u16::from_be_bytes([h[0], h[1]]);
+        let n = usize::from(u16::from_be_bytes([h[2], h[3]]));
+        if t == MESSAGE_INTEGRITY {
+            let (Some(mac), Ok(through)) = (body.get(at + 4..at + 24), u16::try_from(at + 24))
+            else {
+                return false;
+            };
+            if n != 20 {
+                return false;
+            }
+            let mut signed = head.to_vec();
+            signed[2..4].copy_from_slice(&through.to_be_bytes());
+            signed.extend_from_slice(&body[..at]);
+            let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
+            return ring::hmac::verify(&key, &signed, mac).is_ok();
+        }
+        at += 4 + ((n + 3) & !3);
+    }
+    false
 }
 
 /// Whether `datagram` is a STUN message at all (RFC 7983: first byte 0..=3).

@@ -375,3 +375,40 @@ fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     );
     assert_eq!(freed_unzeroed(6), 0, "the plugin's own copies are zeroised");
 }
+
+/// PLAINTEXT QUEUED FOR SEALING IS ZEROISED TOO (codeaudit W10; the shim's doc: relayed plaintext
+/// is zeroised): what the media stack hands the shim to seal is cleared before its buffer is
+/// reused, freed past the spare count, or dropped with the shim still queued. Both counts are
+/// asserted: the shim's own calls run under the stack's trait, whose name a backtrace carries.
+/// RED before the fix: the buffers were cleared by length only and freed holding the plaintext.
+#[test]
+fn plaintext_queued_for_sealing_is_zeroised() {
+    use str0m::crypto::dtls::{DtlsInstance, DtlsOutput};
+    let plain = key(7);
+    let mut shim = Shim::default();
+    shim.handle_packet(&busbar_transport_webrtc::shim::CONNECTED_FRAME)
+        .expect("the relay is taken");
+    let mut buf = vec![0_u8; 2048];
+    // More sends than the shim keeps spare buffers for, then every one polled out.
+    for _ in 0..12 {
+        shim.send_application_data(&plain)
+            .expect("taken once connected");
+    }
+    let mut sealed = 0;
+    for _ in 0..20 {
+        if let DtlsOutput::Packet(p) = shim.poll_output(&mut buf) {
+            assert_eq!(&p[1..], &plain[..]);
+            sealed += 1;
+        }
+    }
+    assert_eq!(sealed, 12, "every packet handed back to seal");
+    // And one still queued when the shim drops.
+    shim.send_application_data(&plain).expect("taken");
+    buf.fill(0);
+    drop(shim);
+    assert_eq!(
+        freed_unzeroed(7) + freed_upstream(7),
+        0,
+        "plaintext queued for sealing was freed unzeroed"
+    );
+}

@@ -12,7 +12,7 @@
 //!
 //! ## One entry: the door
 //!
-//! [`door::door`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
+//! [`door()`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
 //! in (the sibling `busbar-transport-webrtc-plugin` cdylib exports it as its image's one symbol,
 //! `export_door!`). This crate exports nothing, so linking it adds no door symbol and it holds no
 //! `unsafe` at all.
@@ -20,17 +20,27 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod claims;
+mod door;
+mod meta;
+mod stun;
+
+// Public for this repo's allocator-witness tests alone (`tests/zeroise*.rs`, `tests/hot_path_alloc.rs`
+// install their own global allocator, so they cannot run as unit tests): no busbar build names them.
 pub mod crypto;
-pub mod door;
 pub mod framing;
 pub mod shim;
-pub mod stun;
+
+/// The door: the one entry, linked here and exported by the dropped-in build alike.
+pub use door::door;
 
 /// The transport axis entry: the row's key, the layers it declares and its door.
 pub mod linked {
-    pub use crate::door::{door, KEY, MACRO_DOOR};
+    pub use crate::door::{door, MACRO_DOOR};
+    /// The row's registry key.
+    pub const KEY: &str = crate::meta::KEY;
     /// The layers this wire declares it can be built over: none (the datagram port is the host's).
-    pub const COMPOSES_OVER: &[&str] = &[];
+    pub const COMPOSES_OVER: &[&str] = crate::meta::COMPOSES_OVER;
     /// Whether this wire carries sessions: yes, an association is one (its claim row's `session`).
-    pub const SESSION: bool = true;
+    pub const SESSION: bool = crate::meta::SESSION;
 }
