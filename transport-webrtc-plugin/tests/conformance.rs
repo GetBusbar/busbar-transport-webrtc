@@ -6,7 +6,7 @@
 //! `webrtc` framer two ways through the one loader: LINKED (the logic crate's `door::door`) and
 //! DROPPED IN (this crate's built cdylib), over the transport kind's DATAGRAM script (the framer's
 //! tail states `FRAMING_DATAGRAM`) with the inputs in `conformance.json`: `locate` and `encode`
-//! failed, a dialled `begin` offering one text piece that is a session description, and a
+//! refused (`not_served!`), a dialled `begin` offering one text piece that is a session description, and a
 //! rendezvous that is no description failing the framing. Every step's crossings exactly at the
 //! script's pin, the two folds equal, and the suite's RED arms kept. `plugin-ci.yml` runs it under
 //! `--release`. The framer's own both-ways drive is `tests/datagram_witness.rs`.

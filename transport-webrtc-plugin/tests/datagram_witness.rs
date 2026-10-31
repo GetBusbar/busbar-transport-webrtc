@@ -258,8 +258,8 @@ fn expected() -> Vec<String> {
         "validate Ready lease=false ".into(),
         "open Ready lease=false ".into(),
         "listen Refused lease=false listen: the webrtc framer does not serve this op".into(),
-        "locate Failed".into(),
-        "encode Failed".into(),
+        "locate Refused lease=false locate: the webrtc framer does not serve this op".into(),
+        "encode Refused lease=false encode: the webrtc framer does not serve this op".into(),
         "begin without a lane Failed lease=false begin: a datagram framer reads its lane".into(),
         format!(
             "begin dial Ready lease=false  framing=true pieces=[\"stream=0 flags={piece} described=true\"] routes=0 flags=0"
