@@ -2,15 +2,29 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Exact initialized payloads retained by the real shim and framing, observed immediately before
-//! their allocations are freed. Spare capacity, opaque structs and unrelated allocations are never
-//! read. The accepted-pair script also watches the actual upstream KeyingMaterial Vec exposed by
-//! its public slice view; it does not infer ownership from a backtrace.
+//! their allocations are freed. Linux reads those physical ranges through `/proc/self/mem` into
+//! initialized stack storage: the allocator never forms a Rust reference to the released payload.
+//! Spare capacity, opaque structs and unrelated allocations are never read. The accepted-pair
+//! script watches the actual upstream KeyingMaterial Vec exposed by its public slice view.
+//!
+//! Linux requires complete reads and actual frees for every registration. The other platforms run
+//! the same behavior scripts and require the frees, but have no physical-byte wipe proof here;
+//! their test names explicitly say behavior-only. These observations cover registered Vec payloads,
+//! not every upstream secret or stack copy.
 
 use core::net::SocketAddr;
 use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(target_os = "linux")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::framing::{
@@ -29,6 +43,12 @@ static FREED_UNZEROED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS]
 static REGISTERED_UPSTREAM: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED_UPSTREAM_TOTAL: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED_UPSTREAM: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+#[cfg(target_os = "linux")]
+static READ_COMPLETE: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+#[cfg(target_os = "linux")]
+static READ_UPSTREAM_COMPLETE: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
+#[cfg(target_os = "linux")]
+static MEMORY: OnceLock<File> = OnceLock::new();
 
 struct Payload {
     ptr: usize,
@@ -41,6 +61,8 @@ thread_local! {
     // These synchronous sans-IO scripts allocate and drop their buffers on the test's thread.
     // Metadata owns no payload: registration/reallocation can only free unregistered metadata.
     static PAYLOADS: RefCell<Vec<Payload>> = const { RefCell::new(Vec::new()) };
+    #[cfg(target_os = "linux")]
+    static READING: Cell<bool> = const { Cell::new(false) };
 }
 
 fn marked(w: &[u8]) -> Option<usize> {
@@ -57,6 +79,11 @@ fn register(bytes: &[u8], upstream: bool) {
     let Some(id) = bytes.windows(KEY_LEN).find_map(marked) else {
         return;
     };
+    // Opening may allocate; it is deliberately outside the allocator and its metadata borrow.
+    #[cfg(target_os = "linux")]
+    MEMORY.get_or_init(|| {
+        File::open("/proc/self/mem").expect("Linux wipe proof needs /proc/self/mem")
+    });
     PAYLOADS.with(|p| {
         let mut payloads = p.borrow_mut();
         let ptr = bytes.as_ptr().addr();
@@ -94,8 +121,42 @@ pub(crate) fn upstream(bytes: &[u8]) {
 
 struct Watch;
 
-// SAFETY: allocation calls forward unchanged. Only registered, initialized payload bytes are
-// inspected at deallocation, while the actual allocation is still live and exclusively released.
+// Read physical memory through the kernel, never through a Rust reference to the source range.
+// `read_exact_at` retries interrupted/short reads; a denied, missing or incomplete observation
+// cannot increment the complete-read receipt. The overlap retains markers crossing chunks.
+#[cfg(target_os = "linux")]
+fn observe(payload: &Payload) -> Option<bool> {
+    let memory = MEMORY.get()?;
+    let mut chunk = [0_u8; 4096 + KEY_LEN - 1];
+    let mut offset = 0;
+    let mut carried = 0;
+    let mut intact = false;
+    while offset < payload.len {
+        let take = (payload.len - offset).min(4096);
+        let address = u64::try_from(payload.ptr.checked_add(offset)?).ok()?;
+        memory
+            .read_exact_at(&mut chunk[carried..carried + take], address)
+            .ok()?;
+        let total = carried + take;
+        let bytes = &chunk[..total];
+        intact |= if payload.upstream {
+            bytes
+                .windows(KEY_LEN)
+                .any(|w| marked(w) == Some(payload.id))
+        } else {
+            bytes.iter().any(|b| *b != 0)
+        };
+        carried = total.min(KEY_LEN - 1);
+        chunk.copy_within(total - carried..total, 0);
+        offset += take;
+    }
+    Some(intact)
+}
+
+// SAFETY: allocation calls forward unchanged. At deallocation only the matching registered base
+// and the allocator's bounds are examined in Rust. On Linux the kernel copies physical bytes to
+// initialized stack storage before System releases the allocation; no source-memory reference or
+// typed/padding read is made. No allocator path asserts, allocates metadata or unwinds.
 unsafe impl GlobalAlloc for Watch {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // SAFETY: the caller's allocation contract is forwarded unchanged.
@@ -104,29 +165,14 @@ unsafe impl GlobalAlloc for Watch {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let _ = PAYLOADS.try_with(|p| {
-            let Ok(mut payloads) = p.try_borrow_mut() else {
-                return;
-            };
-            let Some(at) = payloads.iter().position(|p| p.ptr == ptr.addr()) else {
-                return;
-            };
-            let payload = payloads.swap_remove(at);
-            // A mismatch is counted as failure without constructing an invalid slice. The hook
-            // recorded the Vec's initialized length, which may be smaller than its capacity.
-            let intact = if payload.len <= layout.size() {
-                // SAFETY: the hook registered this allocation's base and initialized payload
-                // length. Its u8 bytes stay initialized across clear/zeroize and buffer reuse;
-                // no struct padding or spare capacity is read. The allocation is not freed yet.
-                let bytes = unsafe { std::slice::from_raw_parts(ptr, payload.len) };
-                if payload.upstream {
-                    bytes
-                        .windows(KEY_LEN)
-                        .any(|w| marked(w) == Some(payload.id))
-                } else {
-                    bytes.iter().any(|b| *b != 0)
-                }
-            } else {
-                true
+            let payload = {
+                let Ok(mut payloads) = p.try_borrow_mut() else {
+                    return;
+                };
+                let Some(at) = payloads.iter().position(|p| p.ptr == ptr.addr()) else {
+                    return;
+                };
+                payloads.swap_remove(at)
             };
             let (freed, unzeroed) = if payload.upstream {
                 (&FREED_UPSTREAM_TOTAL, &FREED_UPSTREAM)
@@ -134,9 +180,31 @@ unsafe impl GlobalAlloc for Watch {
                 (&FREED, &FREED_UNZEROED)
             };
             freed[payload.id].fetch_add(1, Ordering::SeqCst);
-            if intact {
-                unzeroed[payload.id].fetch_add(1, Ordering::SeqCst);
+            // A mismatch or reentrant/failed read has no complete-read receipt and fails after
+            // the allocator returns. Only the originally initialized payload length is sampled.
+            #[cfg(target_os = "linux")]
+            if payload.len <= layout.size() {
+                let _ = READING.try_with(|reading| {
+                    if reading.replace(true) {
+                        return;
+                    }
+                    let observed = observe(&payload);
+                    reading.set(false);
+                    if let Some(intact) = observed {
+                        let complete = if payload.upstream {
+                            &READ_UPSTREAM_COMPLETE
+                        } else {
+                            &READ_COMPLETE
+                        };
+                        complete[payload.id].fetch_add(1, Ordering::SeqCst);
+                        if intact {
+                            unzeroed[payload.id].fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
             }
+            #[cfg(not(target_os = "linux"))]
+            let _ = (layout, unzeroed);
         });
         // SAFETY: the caller's allocation contract is forwarded unchanged.
         unsafe { System.dealloc(ptr, layout) }
@@ -158,6 +226,12 @@ fn all_freed(id: u8) {
         registered,
         "every registered payload must be freed"
     );
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        READ_COMPLETE[id].load(Ordering::SeqCst),
+        registered,
+        "every registered payload needs a complete OS read at its actual free"
+    );
 }
 
 fn upstream_freed(id: u8) {
@@ -168,6 +242,12 @@ fn upstream_freed(id: u8) {
         "the actual upstream payload must be registered"
     );
     assert_eq!(FREED_UPSTREAM_TOTAL[id].load(Ordering::SeqCst), registered);
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        READ_UPSTREAM_COMPLETE[id].load(Ordering::SeqCst),
+        registered,
+        "every upstream payload needs a complete OS read at its actual free"
+    );
 }
 
 /// The marked key `id`, on the stack (the stack is not the allocator's to watch).
@@ -178,16 +258,18 @@ fn key(id: u8) -> [u8; KEY_LEN] {
 }
 
 /// Unzeroed frees of key `id` made by the plugin's own code.
+#[cfg(target_os = "linux")]
 fn freed_unzeroed(id: u8) -> usize {
     FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
 }
 
 /// Unzeroed frees of the exact upstream KeyingMaterial payload for key `id`.
+#[cfg(target_os = "linux")]
 fn freed_upstream(id: u8) -> usize {
     FREED_UPSTREAM[usize::from(id)].load(Ordering::SeqCst)
 }
 
-#[test]
+#[cfg_attr(target_os = "linux", test)]
 fn keying_material_held_by_the_shim_is_zeroised_when_it_drops() {
     let material = key(1);
     let shim = Shim::default();
@@ -196,10 +278,11 @@ fn keying_material_held_by_the_shim_is_zeroised_when_it_drops() {
     assert!(shim.holds_keying(), "the material was held, on the heap");
     drop(shim);
     all_freed(1);
+    #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(1), 0, "the held material was freed unzeroed");
 }
 
-#[test]
+#[cfg_attr(target_os = "linux", test)]
 fn keying_material_a_framing_refuses_is_zeroised() {
     let material = key(2);
     let now = Instant::now();
@@ -231,16 +314,18 @@ fn keying_material_a_framing_refuses_is_zeroised() {
     assert!(f.holds_keying());
     drop(f);
     all_freed(2);
+    #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(2), 0, "a refused item was freed unzeroed");
 }
 
-#[test]
+#[cfg_attr(target_os = "linux", test)]
 fn red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed() {
     let material = key(3);
     let plain: Vec<u8> = material.to_vec();
     owned(&plain);
     drop(std::hint::black_box(plain));
     all_freed(3);
+    #[cfg(target_os = "linux")]
     assert!(
         freed_unzeroed(3) >= 1,
         "the witness must see a key freed without zeroising"
@@ -250,6 +335,7 @@ fn red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed() {
     owned(&held);
     drop(std::hint::black_box(held));
     all_freed(4);
+    #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(4), 0);
 }
 
@@ -432,7 +518,7 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 /// THE PLUGIN'S OWN COPIES on the accepted path: keying material presented to a verified
 /// association passes through the framing and its shim, and none of what the plugin holds is
 /// freed unzeroed. The upstream KeyingMaterial payload is counted apart (next test).
-#[test]
+#[cfg_attr(target_os = "linux", test)]
 fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     let material = key(5);
     let (dial, accept, _) = connected_with(&material);
@@ -440,6 +526,7 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     drop((dial, accept));
     all_freed(5);
     upstream_freed(5);
+    #[cfg(target_os = "linux")]
     assert_eq!(
         freed_unzeroed(5),
         0,
@@ -451,17 +538,19 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
 /// dimpl 0.7.4 free the KeyingMaterial payload unzeroed. This test follows that actual payload
 /// through the accepted pair and fails when upstream starts zeroising, which is the cue to turn it
 /// into a gate and delete the README note.
-#[test]
+#[cfg_attr(target_os = "linux", test)]
 fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     let material = key(6);
     let (dial, accept, _) = connected_with(&material);
     drop((dial, accept));
     all_freed(6);
     upstream_freed(6);
+    #[cfg(target_os = "linux")]
     assert!(
         freed_upstream(6) >= 1,
         "str0m/dimpl no longer free the keying material unzeroed: make this a gate and drop the README note"
     );
+    #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(6), 0, "the plugin's own copies are zeroised");
 }
 
@@ -470,7 +559,7 @@ fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
 /// reused, freed past the spare count, or dropped with the shim still queued. Both counts are
 /// asserted against the exact registered payloads, including buffers reused after polling.
 /// RED before the fix: the buffers were cleared by length only and freed holding the plaintext.
-#[test]
+#[cfg_attr(target_os = "linux", test)]
 fn plaintext_queued_for_sealing_is_zeroised() {
     use str0m::crypto::dtls::{DtlsInstance, DtlsOutput};
     let plain = key(7);
@@ -496,9 +585,33 @@ fn plaintext_queued_for_sealing_is_zeroised() {
     buf.fill(0);
     drop(shim);
     all_freed(7);
+    #[cfg(target_os = "linux")]
     assert_eq!(
         freed_unzeroed(7) + freed_upstream(7),
         0,
         "plaintext queued for sealing was freed unzeroed"
     );
+}
+
+// No non-Linux memory observer is implemented here. Retain every real product script and the
+// registered-free checks under explicit behavior-only names instead of reporting wipe proof.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn shim_and_refused_framing_behavior_only_without_linux_wipe_proof() {
+    keying_material_held_by_the_shim_is_zeroised_when_it_drops();
+    keying_material_a_framing_refuses_is_zeroised();
+    red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn accepted_framing_behavior_only_without_linux_wipe_proof() {
+    keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised();
+    known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn queued_plaintext_behavior_only_without_linux_wipe_proof() {
+    plaintext_queued_for_sealing_is_zeroised();
 }
