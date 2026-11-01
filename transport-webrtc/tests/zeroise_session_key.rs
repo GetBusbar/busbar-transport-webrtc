@@ -4,16 +4,20 @@
 //! The real provider creates and uses AES-128/256-GCM ciphers, then drops their owned state.
 //!
 //! On GNU/Linux, native malloc capture identifies the allocations containing the SDK's owned
-//! context and cipher_data pointers. Complete `/proc/self/mem` reads require a live full-key
-//! marker in cipher_data and nonzero context state, then require every byte of both captured
-//! allocations to be zero at their actual downstream free or sdallocx, before glibc releases them.
-//! The provider's default OPENSSL allocator and cleansing remain untouched. Native free/sdallocx
+//! context and cipher_data pointers. The malloc hook initializes each entire requested span
+//! with a nonzero sentinel before the native constructor runs. Live reads through the retained
+//! allocator pointer require a full key in cipher_data and real nonzero context state beyond
+//! that sentinel. Reads through the current free/sdallocx pointer require every requested byte
+//! zero before glibc releases it. The provider's default OPENSSL allocator and cleansing remain
+//! untouched; the observer never writes provider state or relies on private allocator headers.
+//! Native free/sdallocx
 //! and Rust Vec positive/negative controls exercise both witnesses. Other platforms retain cipher
 //! behavior and Rust Box free receipts under behavior-only names.
 //!
 //! This covers the actual owned provider allocations on the selected backend/CPU; it is not
 //! proof of wiping every stack copy, register or other upstream secret. No Rust byte reference
-//! is formed over opaque provider state or padding, and no private allocator prefix is parsed.
+//! is formed over opaque provider state. Rust Vec controls register only their initialized
+//! slice and read it through the actual System.dealloc pointer, without scanning spare capacity.
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "support/provider_alloc.rs"]
@@ -21,13 +25,7 @@ mod native;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-use std::fs::File;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-use std::sync::OnceLock;
 
 use str0m::crypto::{
     AeadAes128GcmCipher, AeadAes256GcmCipher, SrtpProvider, SupportedAeadAes128Gcm,
@@ -37,6 +35,8 @@ use str0m::crypto::{
 const MARK: [u8; 8] = *b"SESSKEY!";
 const IDS: usize = 8;
 const LONGEST: usize = 32;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const READ_CHUNK_LEN: usize = 4096;
 
 static REGISTERED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
@@ -44,8 +44,6 @@ static FREED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static READ_COMPLETE: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static FREED_UNZEROED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-static MEMORY: OnceLock<File> = OnceLock::new();
 
 #[derive(Clone, Copy)]
 struct Probe {
@@ -64,7 +62,6 @@ thread_local! {
     static READING: Cell<bool> = const { Cell::new(false) };
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn marked(bytes: &[u8], probe: Probe) -> bool {
     bytes.windows(probe.key_len).any(|key| {
         key.starts_with(&MARK)
@@ -74,29 +71,32 @@ fn marked(bytes: &[u8], probe: Probe) -> bool {
     })
 }
 
-// Only the initialized destination is read by Rust. The source is an address passed to the
-// kernel, not a Rust byte reference. Complete reads and a longest-key overlap cover the entire
-// registered range, including a marker straddling two chunks. No bytes are written to the source.
+// SAFETY: pointer is the actual current System.dealloc parameter, still live. Registration
+// records only a Vec's initialized full slice; these controls never mutate its length or
+// reallocate before drop. Zeroizing may clear its length after overwriting the same u8 bytes,
+// which remain initialized. The caller checks the allocation's actual layout before reading.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn observe(probe: Probe) -> Option<bool> {
-    let memory = MEMORY.get()?;
-    let mut chunk = zeroize::Zeroizing::new([0_u8; 4096 + LONGEST - 1]);
+unsafe fn observe(pointer: *const u8, probe: Probe) -> bool {
+    let mut chunk = zeroize::Zeroizing::new([0_u8; READ_CHUNK_LEN + LONGEST - 1]);
     let mut offset = 0;
     let mut carried = 0;
     let mut intact = false;
     while offset < probe.len {
-        let take = (probe.len - offset).min(4096);
-        let address = u64::try_from(probe.ptr.checked_add(offset)?).ok()?;
-        memory
-            .read_exact_at(&mut chunk[carried..carried + take], address)
-            .ok()?;
+        let take = (probe.len - offset).min(READ_CHUNK_LEN);
+        // SAFETY: source stays within the registered initialized slice of the live
+        // allocation. The stack destination is separate and has room for this chunk.
+        unsafe {
+            pointer
+                .add(offset)
+                .copy_to_nonoverlapping(chunk[carried..].as_mut_ptr(), take);
+        }
         let total = carried + take;
         intact |= marked(&chunk[..total], probe);
         carried = total.min(LONGEST - 1);
         chunk.copy_within(total - carried..total, 0);
         offset += take;
     }
-    Some(intact)
+    intact
 }
 
 fn register(ptr: usize, size: usize, len: usize, id: u8, key_len: usize) {
@@ -109,18 +109,6 @@ fn register(ptr: usize, size: usize, len: usize, id: u8, key_len: usize) {
     };
     assert!(len <= size && len >= key_len && key_len >= MARK.len() && key_len <= LONGEST);
     assert!(probe.id < IDS);
-    // Open outside the allocator and before arming the probe; initialization may allocate.
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        MEMORY.get_or_init(|| {
-            File::open("/proc/self/mem").expect("Linux wipe proof needs /proc/self/mem")
-        });
-        assert_eq!(
-            observe(probe),
-            Some(true),
-            "a complete live read must see the actual full key before this witness can prove its disappearance"
-        );
-    }
     PROBE.with(|slot| {
         assert!(
             slot.replace(Some(probe)).is_none(),
@@ -130,11 +118,28 @@ fn register(ptr: usize, size: usize, len: usize, id: u8, key_len: usize) {
     REGISTERED[probe.id].fetch_add(1, Ordering::SeqCst);
 }
 
+// The controls pass the real Vec's full initialized slice, never a capacity-sized range or
+// an interior subslice. The borrow ends before drop; only address/length metadata is retained.
+fn register_payload(bytes: &[u8], capacity: usize, id: u8, key_len: usize) {
+    let probe = Probe {
+        ptr: bytes.as_ptr().addr(),
+        size: capacity,
+        len: bytes.len(),
+        id: usize::from(id),
+        key_len,
+    };
+    assert!(
+        marked(bytes, probe),
+        "the initialized live payload must contain the actual full key"
+    );
+    register(probe.ptr, probe.size, probe.len, id, key_len);
+}
+
 struct Watch;
 
 // SAFETY: allocation calls forward unchanged. Deallocation compares only the registered address
-// and layout in Rust. The Linux kernel reads the physical range before System releases it, into
-// initialized stack storage; no reference to opaque/deinitialized source memory is constructed.
+// and layout in Rust. Only the registered initialized Vec payload is copied through the current
+// deallocation pointer, before System releases it. No retained shared pointer is dereferenced.
 // There are no assertions, metadata allocations or unwinding paths inside the allocator.
 unsafe impl GlobalAlloc for Watch {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -155,13 +160,13 @@ unsafe impl GlobalAlloc for Watch {
                     if reading.replace(true) {
                         return;
                     }
-                    let observed = observe(probe);
+                    // SAFETY: this is the actual live deallocation pointer, its layout
+                    // matches the registered allocation, and len is the initialized slice.
+                    let intact = unsafe { observe(ptr, probe) };
                     reading.set(false);
-                    if let Some(intact) = observed {
-                        READ_COMPLETE[probe.id].fetch_add(1, Ordering::SeqCst);
-                        if intact {
-                            FREED_UNZEROED[probe.id].fetch_add(1, Ordering::SeqCst);
-                        }
+                    READ_COMPLETE[probe.id].fetch_add(1, Ordering::SeqCst);
+                    if intact {
+                        FREED_UNZEROED[probe.id].fetch_add(1, Ordering::SeqCst);
                     }
                 });
             }
@@ -192,7 +197,7 @@ fn all_freed(id: u8) {
     assert_eq!(
         READ_COMPLETE[id].load(Ordering::SeqCst),
         registered,
-        "every actual free needs a complete OS read with the expected layout"
+        "every actual free needs a complete initialized-byte read through its current pointer"
     );
 }
 
@@ -290,7 +295,7 @@ fn an_aes_256_gcm_session_key_is_zeroised_when_its_cipher_drops() {
 #[cfg_attr(all(target_os = "linux", target_env = "gnu"), test)]
 fn red_arm_a_session_key_in_a_plain_vec_is_seen_freed_unzeroed() {
     let plain: Vec<u8> = key::<16>(3).to_vec();
-    register(plain.as_ptr().addr(), plain.capacity(), plain.len(), 3, 16);
+    register_payload(&plain, plain.capacity(), 3, 16);
     drop(std::hint::black_box(plain));
     all_freed(3);
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -299,7 +304,7 @@ fn red_arm_a_session_key_in_a_plain_vec_is_seen_freed_unzeroed() {
         "the witness must see a session key freed without zeroising"
     );
     let held = zeroize::Zeroizing::new(key::<16>(4).to_vec());
-    register(held.as_ptr().addr(), held.capacity(), held.len(), 4, 16);
+    register_payload(&held, held.capacity(), 4, 16);
     drop(std::hint::black_box(held));
     all_freed(4);
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
