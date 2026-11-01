@@ -445,9 +445,12 @@ fn with(
     };
     let now_ns = sink.now_monotonic_ns;
     let now = h.at(now_ns);
-    let run = match lane {
-        Some(l) => host_state(h, l, now).and_then(|()| op(h, now)),
-        None => op(h, now),
+    let run = match h.f.failure() {
+        Some(why) => Err(why.to_owned()),
+        None => match lane {
+            Some(l) => host_state(h, l, now).and_then(|()| op(h, now)),
+            None => op(h, now),
+        },
     }
     .and_then(|extra| match h.f.failure() {
         Some(why) => Err(why.to_owned()),

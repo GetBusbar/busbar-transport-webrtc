@@ -13,6 +13,9 @@ use crate::shim::Shim;
 #[path = "srtcp_replay_tests.rs"]
 mod srtcp_replay;
 
+#[path = "aead_provider_tests.rs"]
+mod aead_provider;
+
 /// `SRTP_AES128_CM_HMAC_SHA1_80` (RFC 5764 §4.1.2).
 const PROFILE_AES_CM_SHA1_80: u32 = 0x0001;
 /// `SRTP_AES128_CM_HMAC_SHA1_32`.

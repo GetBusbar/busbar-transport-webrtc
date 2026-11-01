@@ -60,6 +60,11 @@ const IV: [u8; 12] = [3; 12];
 /// An RTP header (the AAD of an SRTP packet) and a payload.
 const HEADER: [u8; 12] = [0x80, 0x6f, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1];
 const PAYLOAD: [u8; 160] = [0x5a; 160];
+/// RFC 7714 encrypted SRTCP: clear RTCP header and SSRC, followed by the encrypted-bit index.
+const FIRST_REPORT_AAD: [u8; 12] = [0x80, 200, 0, 6, 0, 0, 0, 1, 0x80, 0, 0, 0];
+const NEXT_REPORT_AAD: [u8; 12] = [0x80, 200, 0, 6, 0, 0, 0, 1, 0x80, 0, 0, 1];
+const FIRST_REPORT_IV: [u8; 12] = [4; 12];
+const NEXT_REPORT_IV: [u8; 12] = [5; 12];
 
 #[test]
 fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
@@ -83,13 +88,44 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
     assert_eq!(&out[..PAYLOAD.len()], &PAYLOAD[..]);
     assert_eq!(n, 0, "an SRTP open allocated {n} times on the hot path");
 
-    // ... and into one exactly as long as the plaintext, with the AAD in two parts (SRTCP).
-    let (head, tail) = HEADER.split_at(8);
+    // ... and into one exactly as long as the plaintext, with the pinned stack's SRTCP AAD
+    // layout. A first authenticated report registers its source; later packets reuse that
+    // replay window without allocating. Registration is outside the per-packet measurement.
     let mut seal2 = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], true);
-    AeadAes128GcmCipher::encrypt(&mut *seal2, &IV, &HEADER, &PAYLOAD, &mut sealed).expect("sealed");
+    let mut open2 = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], false);
     let mut exact = [0_u8; PAYLOAD.len()];
+    AeadAes128GcmCipher::encrypt(
+        &mut *seal2,
+        &FIRST_REPORT_IV,
+        &FIRST_REPORT_AAD,
+        &PAYLOAD,
+        &mut sealed,
+    )
+    .expect("first report sealed");
+    AeadAes128GcmCipher::decrypt(
+        &mut *open2,
+        &FIRST_REPORT_IV,
+        &[&FIRST_REPORT_AAD, &[]],
+        &sealed,
+        &mut exact,
+    )
+    .expect("first report registered its source");
+    AeadAes128GcmCipher::encrypt(
+        &mut *seal2,
+        &NEXT_REPORT_IV,
+        &NEXT_REPORT_AAD,
+        &PAYLOAD,
+        &mut sealed,
+    )
+    .expect("next report sealed");
     let (n, r) = allocations(|| {
-        AeadAes128GcmCipher::decrypt(&mut *open, &IV, &[head, tail], &sealed, &mut exact)
+        AeadAes128GcmCipher::decrypt(
+            &mut *open2,
+            &NEXT_REPORT_IV,
+            &[&NEXT_REPORT_AAD, &[]],
+            &sealed,
+            &mut exact,
+        )
     });
     assert_eq!(r.expect("opened"), PAYLOAD.len());
     assert_eq!(exact, PAYLOAD);

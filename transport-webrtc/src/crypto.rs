@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The framer's crypto provider: every primitive the media stack asks for, on ring, with one
-//! exception:
+//! The framer's crypto provider for the media stack.
 //!
-//! * SRTP is AEAD-AES-GCM only (RFC 7714), 128- and 256-bit, on `ring::aead`. The AES_CM profile's
+//! * SRTP is AEAD-AES-GCM only (RFC 7714), 128- and 256-bit, using the SDK's managed key. The AES_CM profile's
 //!   factory hands out a cipher that refuses every packet: `AES_CM` is refused here as it is at the
 //!   host's handshake and at the keying-material item ([`crate::framing`]).
 //! * The SRTP key derivation needs a raw AES block (RFC 3711 §4.3 runs AES in counter mode over
@@ -15,10 +14,11 @@
 //! * DTLS is not here: the provider's DTLS factory is the host shim ([`crate::shim`]), which runs
 //!   no handshake and holds no DTLS key.
 
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
-use ring::aead::{Aad, LessSafeKey, Nonce, Tag, UnboundKey, AES_128_GCM, AES_256_GCM};
+use busbar_contract::abi::sdk::aead::{AesGcm, GCM_TAG_LEN};
+use ring::aead::{AES_128_GCM, AES_256_GCM};
 use str0m::crypto::{
     AeadAes128GcmCipher, AeadAes256GcmCipher, Aes128CmSha1_80Cipher, CryptoError, CryptoProvider,
     Sha1HmacProvider, Sha256Provider, SrtpProvider, SupportedAeadAes128Gcm, SupportedAeadAes256Gcm,
@@ -41,6 +41,25 @@ pub fn provider() -> CryptoProvider {
 /// The most AAD bytes an open gathers on the stack (an SRTP header with its extensions, an SRTCP
 /// header and index); more spill to the heap.
 const AAD_ON_STACK: usize = 1024;
+
+// RFC 3550 §5.1 and RFC 5761 §4: version bits and the RTCP payload-type demux range.
+const RTP_VERSION_MASK: u8 = 0xc0;
+const RTP_VERSION_2: u8 = 0x80;
+const RTP_PAYLOAD_TYPE_MASK: u8 = 0x7f;
+const RTCP_PAYLOAD_TYPE_MIN: u8 = 64;
+const RTCP_PAYLOAD_TYPE_MAX: u8 = 95;
+// RFC 7714 §9: the first eight RTCP bytes and the E-bit/31-bit index form encrypted AAD.
+const SRTCP_HEADER_LEN: usize = 8;
+const SRTCP_INDEX_LEN: usize = 4;
+const SRTCP_AAD_LEN: usize = SRTCP_HEADER_LEN + SRTCP_INDEX_LEN;
+const SRTCP_ENCRYPTED_FLAG: u32 = 0x8000_0000;
+const SRTCP_ENCRYPTED_BYTE_FLAG: u8 = (SRTCP_ENCRYPTED_FLAG >> 24) as u8;
+const SRTCP_INDEX_MASK: u32 = !SRTCP_ENCRYPTED_FLAG;
+const SSRC_FIELD: std::ops::Range<usize> = 4..SRTCP_HEADER_LEN;
+const SRTCP_SOURCE_LIMIT: usize = crate::framing::MAX_QUEUED;
+const SRTCP_LAYOUT_REFUSED: &str = "SRTCP authentication layout refused";
+const SRTCP_SENDER_EXHAUSTED: &str = "SRTCP sender index exhausted or reused";
+const SRTCP_REPLAY_REFUSED: &str = "SRTCP replay or source capacity exceeded";
 
 fn refused(why: &str) -> CryptoError {
     CryptoError::Other(why.into())
@@ -108,9 +127,65 @@ impl Aes128CmSha1_80Cipher for AesCmRefused {
     }
 }
 
-/// An AEAD-AES-GCM cipher on ring: one key, sealing or opening in place.
+/// An AEAD-AES-GCM cipher with provider-owned key state destroyed on drop.
 pub struct Gcm {
-    key: LessSafeKey,
+    key: AesGcm,
+    srtcp: HashMap<u32, ReplayWindow>,
+    last_sent_srtcp: Option<u32>,
+}
+
+#[derive(Debug)]
+struct ReplayWindow {
+    highest: u32,
+    seen: u64,
+}
+
+impl ReplayWindow {
+    fn accept(&mut self, index: u32) -> bool {
+        if index > self.highest {
+            let shift = index - self.highest;
+            self.seen = self.seen.checked_shl(shift).unwrap_or(0) | 1;
+            self.highest = index;
+            return true;
+        }
+        let Some(bit) = 1_u64.checked_shl(self.highest - index) else {
+            return false;
+        };
+        if self.seen & bit != 0 {
+            return false;
+        }
+        self.seen |= bit;
+        true
+    }
+}
+
+/// str0m 0.24.1 gives RTP one AAD slice and SRTCP two: [header+index, empty]
+/// for encryption, or [whole report, index] for authentication only. Keep the
+/// two modes in the same SSRC/index space. A 12-byte RTP header is not SRTCP.
+fn srtcp_index(aads: &[&[u8]]) -> Result<Option<(u32, u32)>, CryptoError> {
+    let [head, tail] = aads else {
+        return Ok(None);
+    };
+    let (header, index) = if head.len() == SRTCP_AAD_LEN
+        && tail.is_empty()
+        && head[SRTCP_HEADER_LEN] & SRTCP_ENCRYPTED_BYTE_FLAG != 0
+    {
+        (&head[..SRTCP_HEADER_LEN], &head[SRTCP_HEADER_LEN..])
+    } else if head.len() >= SRTCP_HEADER_LEN
+        && tail.len() == SRTCP_INDEX_LEN
+        && tail[0] & SRTCP_ENCRYPTED_BYTE_FLAG == 0
+    {
+        (&head[..SRTCP_HEADER_LEN], *tail)
+    } else {
+        return Err(refused(SRTCP_LAYOUT_REFUSED));
+    };
+    let ssrc = u32::from_be_bytes(
+        header[SSRC_FIELD]
+            .try_into()
+            .map_err(|_| refused(SRTCP_LAYOUT_REFUSED))?,
+    );
+    let index = u32::from_be_bytes([index[0], index[1], index[2], index[3]]) & SRTCP_INDEX_MASK;
+    Ok(Some((ssrc, index)))
 }
 
 impl fmt::Debug for Gcm {
@@ -119,29 +194,35 @@ impl fmt::Debug for Gcm {
     }
 }
 
-impl Drop for Gcm {
-    /// ring holds the AES key schedule (its first round key is the SRTP session key) and the GHASH
-    /// key in this value and offers no zeroising: the value is overwritten in place with the
-    /// schedule of the all-zero key of the same algorithm (the same layout), and the store is kept
-    /// from being elided before the memory goes back to the allocator (keys are zeroised).
-    fn drop(&mut self) {
-        let alg = self.key.algorithm();
-        let zero = [0_u8; 32];
-        if let Some(k) = zero
-            .get(..alg.key_len())
-            .and_then(|z| UnboundKey::new(alg, z).ok())
-        {
-            self.key = LessSafeKey::new(k);
-        }
-        std::hint::black_box(&self.key);
-    }
-}
-
 impl Gcm {
     fn new(alg: &'static ring::aead::Algorithm, key: &[u8]) -> Option<Self> {
-        UnboundKey::new(alg, key).ok().map(|k| Gcm {
-            key: LessSafeKey::new(k),
+        if key.len() != alg.key_len() {
+            return None;
+        }
+        AesGcm::new(key).ok().map(|key| Gcm {
+            key,
+            srtcp: HashMap::new(),
+            last_sent_srtcp: None,
         })
+    }
+
+    fn accept_srtcp(&mut self, ssrc: u32, index: u32) -> bool {
+        if let Some(window) = self.srtcp.get_mut(&ssrc) {
+            return window.accept(index);
+        }
+        // Keep history for this cipher's whole key epoch. Evicting a source
+        // would make its authenticated old packets acceptable again.
+        if self.srtcp.len() >= SRTCP_SOURCE_LIMIT {
+            return false;
+        }
+        self.srtcp.insert(
+            ssrc,
+            ReplayWindow {
+                highest: index,
+                seen: 1,
+            },
+        );
+        true
     }
 
     /// `output = ciphertext(input) || tag`, `output.len() >= input.len() + 16`.
@@ -154,20 +235,38 @@ impl Gcm {
     ) -> Result<(), CryptoError> {
         #[cfg(test)]
         sender_tests::before_seal(self, iv, aad, input);
-        let tag_len = self.key.algorithm().tag_len();
-        if output.len() < input.len() + tag_len {
+        let Some(needed) = input.len().checked_add(GCM_TAG_LEN) else {
+            return Err(refused("SRTP seal: output too short"));
+        };
+        if output.len() < needed {
             return Err(refused("SRTP seal: output too short"));
         }
-        output[..input.len()].copy_from_slice(input);
-        let tag = self
-            .key
-            .seal_in_place_separate_tag(
-                Nonce::assume_unique_for_key(*iv),
-                Aad::from(aad),
-                &mut output[..input.len()],
-            )
+        // Pinned str0m 0.24.1 protect_rtcp uses one global 31-bit sender index,
+        // then wraps it before calling this cipher. Its MultiplexKind demux
+        // reserves masked payload types 64..95 for RTCP, including with the
+        // RTP marker bit set; a twelve-byte RTP AAD must not enter this guard.
+        if aad.len() == SRTCP_AAD_LEN
+            && aad[0] & RTP_VERSION_MASK == RTP_VERSION_2
+            && (RTCP_PAYLOAD_TYPE_MIN..=RTCP_PAYLOAD_TYPE_MAX)
+                .contains(&(aad[1] & RTP_PAYLOAD_TYPE_MASK))
+            && aad[SRTCP_HEADER_LEN] & SRTCP_ENCRYPTED_BYTE_FLAG != 0
+        {
+            let index = u32::from_be_bytes(
+                aad[SRTCP_HEADER_LEN..]
+                    .try_into()
+                    .map_err(|_| refused(SRTCP_LAYOUT_REFUSED))?,
+            ) & SRTCP_INDEX_MASK;
+            if self.last_sent_srtcp.is_some_and(|last| index <= last) {
+                output.zeroize();
+                return Err(refused(SRTCP_SENDER_EXHAUSTED));
+            }
+            // Reserve before sealing: even an uncertain provider failure must
+            // not permit another use of this nonce in this key epoch.
+            self.last_sent_srtcp = Some(index);
+        }
+        self.key
+            .seal(iv, aad, input, &mut output[..needed])
             .map_err(|_| refused("SRTP seal failed"))?;
-        output[input.len()..input.len() + tag_len].copy_from_slice(tag.as_ref());
         Ok(())
     }
 
@@ -175,21 +274,18 @@ impl Gcm {
     /// place in `output` with the AAD gathered on the stack: no allocation per packet.
     /// A packet that fails authentication leaves `output` zeroed.
     fn open(
-        &self,
+        &mut self,
         iv: &[u8; 12],
         aads: &[&[u8]],
         input: &[u8],
         output: &mut [u8],
     ) -> Result<usize, CryptoError> {
-        let tag_len = self.key.algorithm().tag_len();
-        let Some(n) = input.len().checked_sub(tag_len) else {
+        let Some(n) = input.len().checked_sub(GCM_TAG_LEN) else {
             return Err(refused("SRTP open: shorter than its tag"));
         };
         if output.len() < n {
             return Err(refused("SRTP open: output too short"));
         }
-        let (ciphertext, tag) = input.split_at(n);
-        let tag = Tag::try_from(tag).map_err(|_| refused("SRTP open: a malformed tag"))?;
         let mut gathered = [0_u8; AAD_ON_STACK];
         let total: usize = aads.iter().map(|a| a.len()).sum();
         let spilled: Vec<u8>;
@@ -209,20 +305,23 @@ impl Gcm {
             }
         };
         let out = &mut output[..n];
-        out.copy_from_slice(ciphertext);
-        if self
-            .key
-            .open_in_place_separate_tag(
-                Nonce::assume_unique_for_key(*iv),
-                Aad::from(aad),
-                tag,
-                out,
-                0..,
-            )
-            .is_err()
-        {
+        if self.key.open(iv, aad, input, out).is_err() {
             out.zeroize();
             return Err(refused("SRTP authentication failed"));
+        }
+        // Authenticate before allocating source state or advancing the window.
+        // str0m creates separate ciphers for RTP/RTCP, send/receive and each key
+        // epoch. Within an epoch the 31-bit index must not wrap (RFC 7714 §13.1).
+        match srtcp_index(aads) {
+            Ok(Some((ssrc, index))) if !self.accept_srtcp(ssrc, index) => {
+                out.zeroize();
+                return Err(refused(SRTCP_REPLAY_REFUSED));
+            }
+            Err(error) => {
+                out.zeroize();
+                return Err(error);
+            }
+            _ => {}
         }
         Ok(n)
     }

@@ -592,6 +592,9 @@ impl Framing {
         keying: Option<(u32, &[u8])>,
         now: Instant,
     ) -> Result<(), Failed> {
+        if let Some(why) = self.failure() {
+            return Err(why.to_owned());
+        }
         if bound != self.bound {
             self.bound = bound;
             if self.asked.is_some_and(|r| target(r) == bound) {
@@ -618,7 +621,10 @@ impl Framing {
         }
         self.flush_relay(now);
         self.drain(now);
-        Ok(())
+        match self.failure() {
+            Some(why) => Err(why.to_owned()),
+            None => Ok(()),
+        }
     }
 
     /// Hand the shim what it is owed, once the description pair settled (before that, the media
@@ -770,6 +776,9 @@ impl Framing {
         text: bool,
         now: Instant,
     ) -> Result<(), Failed> {
+        if let Some(why) = self.failure() {
+            return Err(why.to_owned());
+        }
         if let Some(mid) = self.media_by_stream.get(&stream).copied() {
             if bytes.is_empty() {
                 // An empty frame is no Opus packet and no RTP packet carries it: real-time media
@@ -916,6 +925,10 @@ impl Framing {
 
     /// Close the association.
     pub fn finish(&mut self, now: Instant) {
+        if self.failed.is_some() {
+            self.ended = true;
+            return;
+        }
         let _ = self.rtc.close();
         self.drain(now);
         self.ended = true;
@@ -966,6 +979,9 @@ impl Framing {
 
     /// Run the media stack until it waits, collecting what it owes.
     fn drain(&mut self, now: Instant) {
+        if self.failed.is_some() {
+            return;
+        }
         self.now = Some(now);
         // Messages held for channels that have since opened (or that had no room), in order.
         if !self.held.is_empty() {
@@ -975,10 +991,20 @@ impl Framing {
             }
         }
         for _ in 0..10_000 {
-            let out = match self.rtc.poll_output() {
-                Ok(o) => o,
-                Err(e) => {
+            // str0m expects RTCP encryption to succeed and panics on provider
+            // refusal, including exhausted sender nonces. Quarantine the Rtc
+            // after any poll panic; never resume it or expose queued output.
+            let out = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.rtc.poll_output()
+            })) {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => {
                     self.fail(format!("the media stack failed: {e}"));
+                    return;
+                }
+                Err(_) => {
+                    self.fail("the media stack panicked while producing output".into());
+                    self.ended = true;
                     return;
                 }
             };
