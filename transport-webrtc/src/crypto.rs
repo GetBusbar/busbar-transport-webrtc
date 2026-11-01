@@ -146,12 +146,14 @@ impl Gcm {
 
     /// `output = ciphertext(input) || tag`, `output.len() >= input.len() + 16`.
     fn seal(
-        &self,
+        &mut self,
         iv: &[u8; 12],
         aad: &[u8],
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
+        #[cfg(test)]
+        sender_tests::before_seal(self, iv, aad, input);
         let tag_len = self.key.algorithm().tag_len();
         if output.len() < input.len() + tag_len {
             return Err(refused("SRTP seal: output too short"));
@@ -371,3 +373,7 @@ pub fn random<const N: usize>() -> Option<[u8; N]> {
 #[cfg(test)]
 #[path = "tests/crypto_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/srtcp_sender_tests.rs"]
+pub(crate) mod sender_tests;

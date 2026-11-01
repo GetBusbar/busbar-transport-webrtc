@@ -209,6 +209,137 @@ fn heard(e: &End, stream: u64) -> Vec<Vec<u8>> {
         .collect()
 }
 
+fn report_feedback(to: &mut End, from: SocketAddr, bytes: &[u8], now: Instant) -> usize {
+    let receive = Receive::new(Protocol::Udp, from, to.addr, bytes).unwrap();
+    to.f.rtc.handle_input(Input::Receive(now, receive)).unwrap();
+    let mut reports = 0;
+    loop {
+        match to.f.rtc.poll_output().unwrap() {
+            Output::Event(Event::SenderFeedback(_)) => reports += 1,
+            Output::Timeout(_) => break,
+            _ => {}
+        }
+    }
+    reports
+}
+
+#[test]
+fn an_authenticated_srtcp_replay_does_not_reapply_sender_report_state() {
+    for (profile, key_len) in [
+        (PROFILE_AEAD_AES_128_GCM, 56),
+        (PROFILE_AEAD_AES_256_GCM, 88),
+    ] {
+        let (mut dial, mut accept, mut now) = connected_under(profile, key_len);
+        dial.f.emit(MEDIA_BASE, OPUS, false, now).unwrap();
+        accept.f.emit(MEDIA_BASE, OPUS, false, now).unwrap();
+        run(&mut dial, &mut accept, &mut now, 12_000);
+        for flip in [false, true] {
+            let (from, to) = if flip {
+                (&mut accept, &mut dial)
+            } else {
+                (&mut dial, &mut accept)
+            };
+            let reports: Vec<_> = from
+                .sent
+                .iter()
+                .filter(|r| r.lane == Lane::Clear && r.bytes.get(1) == Some(&200))
+                .collect();
+            assert!(
+                reports.len() >= 2,
+                "two actual protected sender reports required"
+            );
+            let old = reports[reports.len() - 2].bytes.clone();
+            let recent = reports.last().unwrap().bytes.clone();
+            assert_ne!(old, recent);
+            now += Duration::from_millis(1);
+            assert_eq!(
+                report_feedback(to, from.addr, &old, now),
+                0,
+                "old authenticated report reapplied"
+            );
+            assert_eq!(
+                report_feedback(to, from.addr, &recent, now),
+                0,
+                "latest authenticated report reapplied"
+            );
+
+            // A new report still reaches the actual dependency's report handler.
+            now += Duration::from_secs(6);
+            from.f.emit(MEDIA_BASE, OPUS, false, now).unwrap();
+            from.f.timeout(now);
+            let mut new_reports = Vec::new();
+            while let Some(route) = from.f.next_route() {
+                if route.lane == Lane::Clear && route.bytes.get(1) == Some(&200) {
+                    new_reports.push(route.bytes);
+                }
+            }
+            assert!(!new_reports.is_empty(), "new sender report required");
+            for fresh in new_reports {
+                assert_eq!(report_feedback(to, from.addr, &fresh, now), 1);
+                assert_eq!(report_feedback(to, from.addr, &fresh, now), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn an_exhausted_srtcp_sender_ends_the_real_transmitter_without_further_wire_output() {
+    for (profile, key_len) in [
+        (PROFILE_AEAD_AES_128_GCM, 56),
+        (PROFILE_AEAD_AES_256_GCM, 88),
+    ] {
+        let injection = crate::crypto::sender_tests::ExhaustSender::start();
+        let (mut dial, mut accept, mut now) = connected_under(profile, key_len);
+        dial.f.emit(MEDIA_BASE, OPUS, false, now).unwrap();
+        accept.f.emit(MEDIA_BASE, OPUS, false, now).unwrap();
+        run(&mut dial, &mut accept, &mut now, 20_000);
+        let (ssrc, attempts, primed) = injection.snapshot();
+        assert!(
+            primed,
+            "the real transmitter must make two protected RTCP calls"
+        );
+        assert_eq!(
+            attempts, 2,
+            "a failed association must stop invoking its sender cipher"
+        );
+        let failed = if dial.f.failure().is_some() {
+            &mut dial
+        } else {
+            &mut accept
+        };
+        assert!(
+            failed.f.failure().is_some(),
+            "upstream encryption failure must end the association"
+        );
+        let reports: Vec<_> = failed
+            .sent
+            .iter()
+            .filter(|route| {
+                route.lane == Lane::Clear
+                    && route.bytes.len() >= 8
+                    && route.bytes[1] == 200
+                    && route.bytes[4..8] == ssrc
+            })
+            .collect();
+        assert_eq!(reports.len(), 1, "only the first genuine report reaches the wire; the synthetic terminal seal never does");
+        let first_index = u32::from_be_bytes(
+            reports[0].bytes[reports[0].bytes.len() - 4..]
+                .try_into()
+                .unwrap(),
+        );
+        assert!(first_index & 0x8000_0000 != 0 && first_index != u32::MAX);
+        let failure = failed.f.failure().unwrap().to_owned();
+        failed.f.timeout(now + Duration::from_secs(60));
+        failed.f.finish(now + Duration::from_secs(61));
+        assert_eq!(failed.f.failure(), Some(failure.as_str()));
+        assert!(
+            failed.f.next_route().is_none(),
+            "a failed transmitter must never resume output"
+        );
+        assert_eq!(injection.snapshot().1, attempts);
+    }
+}
+
 #[test]
 fn an_offer_and_an_answer_settle_terms_and_a_session_carries_messages_and_media_both_ways() {
     let (mut dial, mut accept, mut now) = connected();
@@ -1151,4 +1282,38 @@ fn an_association_keyed_under_aes_256_gcm_carries_both_ways() {
     run(&mut dial, &mut accept, &mut now, 500);
     assert_eq!(heard(&accept, channel), [b"over 256".to_vec()]);
     assert!(heard(&accept, media).iter().any(|b| b == OPUS));
+}
+
+#[test]
+fn a_failed_association_refuses_host_updates_and_both_emit_paths() {
+    for (profile, key_len) in [
+        (PROFILE_AEAD_AES_128_GCM, 56),
+        (PROFILE_AEAD_AES_256_GCM, 88),
+    ] {
+        let (mut dial, _accept, now) = connected_under(profile, key_len);
+        assert!(dial.f.carries(MEDIA_BASE));
+        assert!(dial.f.carries(1));
+        let bound = dial.f.bound;
+        let clocks = dial.f.media_clock.clone();
+        let held = dial.f.held(1);
+        let why = "the media stack panicked while producing output";
+        dial.f.fail(why.into());
+        assert_eq!(
+            dial.f.host(bound + 1, true, None, now),
+            Err(why.into()),
+            "a failed host-state step must short-circuit the door's following operation"
+        );
+        assert_eq!(dial.f.bound, bound, "failed host state is immutable");
+        for (stream, bytes) in [(MEDIA_BASE, OPUS), (1, &b"late message"[..])] {
+            assert_eq!(
+                dial.f.emit(stream, bytes, false, now),
+                Err(why.into()),
+                "neither emit path may reenter a quarantined media stack"
+            );
+        }
+        assert_eq!(dial.f.media_clock, clocks, "no late media was accepted");
+        assert_eq!(dial.f.held(1), held, "no late data was queued");
+        assert_eq!(dial.f.failure(), Some(why));
+        assert!(dial.f.next_route().is_none());
+    }
 }

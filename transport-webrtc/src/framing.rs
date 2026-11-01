@@ -65,7 +65,7 @@ pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 const MAX_HELD: usize = 256;
 /// The most routes, and the most data pieces, queued for the host at once: past it a route is
 /// dropped (a datagram network loses them anyway) and a data piece fails its stream.
-const MAX_QUEUED: usize = MAX_HELD * 4;
+pub(crate) const MAX_QUEUED: usize = MAX_HELD * 4;
 
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
 /// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
