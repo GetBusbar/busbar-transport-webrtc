@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn,
-    FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, LANE_RENDEZVOUS, PIECE_CONTINUED,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_DIAL, YIELD_MORE,
+    FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, EMIT_TEXT, EMIT_TRAILERS,
+    LANE_RENDEZVOUS, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_STREAM_FAILED,
+    PIECE_TEXT, SIDE_DIAL, YIELD_MORE,
 };
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{Frame, Plugin};
@@ -236,6 +237,37 @@ fn emit(p: &Plugin<Transport>, host: &mut Host, token: u64, stream: u64, bytes: 
     (i.sink, i.lane) = (host.sink(), &l);
     let (outcome, why, o) = go(p, slot::EMIT, i);
     host.answer(outcome, why, &o)
+}
+
+/// The real door refuses unsupported flags without consuming or tearing down the association.
+#[test]
+fn trailer_and_unknown_emit_flags_do_not_change_the_live_association() {
+    let p = door();
+    let mut host = Host::new(64 * 1024, 64 * 1024);
+    let opened = begin(&p, &mut host, &[b"data"]);
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let token = opened.framing;
+    for flags in [EMIT_TRAILERS, EMIT_TRAILERS | EMIT_TEXT, 1 << 31] {
+        let lane = host.lane(0);
+        let mut i: EmitIn = conf::input();
+        i.framing = token;
+        i.stream = 1;
+        i.bytes = b"x-final: value\r\n".as_ptr();
+        i.len = b"x-final: value\r\n".len();
+        i.end_of_frame = 1;
+        i.flags = flags;
+        i.sink = host.sink();
+        i.lane = &lane;
+        let (outcome, why, out) = go(&p, slot::EMIT, i);
+        assert_eq!(outcome, Outcome::Refused, "{why}");
+        assert!(why.contains("does not support these flags"));
+        assert_eq!(out.yielded.wire_len, 0);
+        assert_eq!(out.yielded.frame_len, 0);
+        assert_eq!(out.yielded.pieces_len, 0);
+    }
+    let valid = emit(&p, &mut host, token, 1, b"ordinary-message");
+    assert_eq!(valid.outcome, Outcome::Ready, "{}", valid.why);
+    assert_eq!(timer(&p, &mut host, token).outcome, Outcome::Ready);
 }
 
 fn timer(p: &Plugin<Transport>, host: &mut Host, token: u64) -> Answer {

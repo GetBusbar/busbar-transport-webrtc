@@ -658,6 +658,11 @@ impl SafeSlot for Emit {
     type Out = FramerOut;
     type State = State;
     fn call(inst: Instance<'_, State>, i: Lent<'_, EmitIn>, mut o: Out<'_, FramerOut>) -> Outcome {
+        if i.flags & !EMIT_TEXT != 0 {
+            return o.fail(Refusal::refused(
+                "emit: the webrtc framer does not support these flags",
+            ));
+        }
         let bytes = i.bytes();
         let end = i.end_of_frame != 0;
         let text = i.flags & EMIT_TEXT != 0;
