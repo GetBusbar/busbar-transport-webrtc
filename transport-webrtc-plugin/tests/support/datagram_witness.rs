@@ -311,7 +311,14 @@ fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let want = expected();
     assert_eq!(linked.len(), want.len(), "{linked:#?}");
     for (got, want) in linked.iter().zip(&want) {
-        assert!(got.starts_with(want.as_str()), "got:  {got}\nwant: {want}…");
+        if want.starts_with("begin dial ")
+            || want.starts_with("begin accept ")
+            || want.starts_with("finish Ready ")
+        {
+            assert_eq!(got, want, "exact datagram script success answer");
+        } else {
+            assert!(got.starts_with(want.as_str()), "got:  {got}\nwant: {want}…");
+        }
     }
 }
 

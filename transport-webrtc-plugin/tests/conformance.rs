@@ -26,8 +26,10 @@ fn cdylib() -> std::path::PathBuf {
 fn bind(d: &Dispatcher) -> Bind {
     abi::bind(d, "webrtc-lifecycle")
 }
-fn open(p: &Plugin<Transport>) {
-    assert_eq!(abi::open(p).outcome, Outcome::Ready);
+fn open(p: &Plugin<Transport>) -> Called {
+    let answer = abi::open(p);
+    assert_eq!(answer.outcome, Outcome::Ready);
+    answer
 }
 fn counts(p: &Plugin<Transport>) -> (u64, u64) {
     let resumed = p.inner.resumes.load(Ordering::SeqCst);
@@ -60,18 +62,15 @@ fn lifecycle(p: &Plugin<Transport>, d: &Dispatcher) -> Vec<String> {
     assert_eq!(counts(p), before, "reading facts makes no crossings");
     let mut begin: BeginIn = abi::input();
     begin.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
-    assert_eq!(
-        call::<_, busbar_contract::abi::transport::FramerOut>(p, slot::BEGIN, begin, 0)
-            .0
-            .outcome,
-        Outcome::Refused
-    );
+    let unopened =
+        call::<_, busbar_contract::abi::transport::FramerOut>(p, slot::BEGIN, begin, 0).0;
+    assert_eq!(unopened.outcome, Outcome::Refused);
     let before = counts(p);
     let validated = abi::validate(p);
     assert_eq!(validated.outcome, Outcome::Ready);
     assert_eq!(counts(p).0 - before.0, 1);
     let before = counts(p);
-    open(p);
+    let opened = open(p);
     assert_eq!(counts(p).0 - before.0, 1);
     let before = counts(p);
     assert!(
@@ -109,18 +108,23 @@ fn lifecycle(p: &Plugin<Transport>, d: &Dispatcher) -> Vec<String> {
     assert_eq!(closed.outcome, Outcome::Ready);
     let mut begin: BeginIn = abi::input();
     begin.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
-    assert_eq!(
-        call::<_, busbar_contract::abi::transport::FramerOut>(p, slot::BEGIN, begin, 0)
-            .0
-            .outcome,
-        Outcome::Fault
-    );
-    vec![
+    let after_close =
+        call::<_, busbar_contract::abi::transport::FramerOut>(p, slot::BEGIN, begin, 0).0;
+    assert_eq!(after_close.outcome, Outcome::Fault);
+    let mut transcript = vec![
+        format!("{} {facts:?}", p.name()),
+        abi::called(&unopened),
         abi::called(&validated),
+        abi::called(&opened),
+    ];
+    transcript.extend(refused.iter().map(abi::called));
+    transcript.extend([
         format!("{} next={}", abi::called(&ticked), out.next_tick_ns),
         abi::called(&refreshed),
         abi::called(&closed),
-    ]
+        abi::called(&after_close),
+    ]);
+    transcript
 }
 #[test]
 fn the_linked_and_the_dropped_in_door_are_one_plugin() {
@@ -132,6 +136,21 @@ fn the_linked_and_the_dropped_in_door_are_one_plugin() {
             .expect("exported door"),
         r.statement
     );
+    let (dropped_address, dropped_ops) =
+        busbar_plugin_loader::dispatch::load::door_addresses_of_library(&cdylib())
+            .expect("actual image reads")
+            .expect("actual door exports");
+    let linked_address = (r.door)();
+    assert!(!linked_address.is_null());
+    // SAFETY: this is the validated real static product door.
+    let linked_ops =
+        unsafe { busbar_contract::abi::mechanism::door::Door::read_parts(linked_address) }.ops
+            as usize;
+    assert_ne!(
+        dropped_address, linked_address as usize,
+        "independent image"
+    );
+    assert_ne!(dropped_ops, linked_ops, "independent operation table");
     let linked = load_linked::<Transport>(&r, bind(&d)).expect("linked real product");
     let dropped =
         load_dropped::<Transport>(&cdylib(), &r.statement, bind(&d)).expect("dropped real product");
