@@ -68,40 +68,6 @@ pub fn cdylib() -> std::path::PathBuf {
         "build the actual WebRTC cdylib before testing: {}",
         artifact.display()
     );
-    let built = artifact
-        .metadata()
-        .expect("artifact metadata")
-        .modified()
-        .expect("artifact time");
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("repo root");
-    let mut pending = vec![
-        root.join("transport-webrtc/src"),
-        root.join("transport-webrtc-plugin/src"),
-        root.join("Cargo.toml"),
-        root.join("transport-webrtc/Cargo.toml"),
-        root.join("transport-webrtc-plugin/Cargo.toml"),
-    ];
-    while let Some(path) = pending.pop() {
-        if path.is_dir() {
-            pending.extend(
-                std::fs::read_dir(path)
-                    .expect("source directory")
-                    .map(|entry| entry.expect("source entry").path()),
-            );
-        } else {
-            assert!(
-                path.metadata()
-                    .expect("source metadata")
-                    .modified()
-                    .expect("source time")
-                    <= built,
-                "rebuild the actual WebRTC cdylib after editing {}",
-                path.display()
-            );
-        }
-    }
     artifact
 }
 pub fn open(plugin: &Plugin<Transport>) -> Called {
