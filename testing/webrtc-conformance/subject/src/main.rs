@@ -219,7 +219,6 @@ async fn respond(s: &mut tokio::net::TcpStream, status: &str, kind: &str, body: 
 }
 
 /// `POST /offer`: the accepting association, settled by the browser's offer, joins the port; the
-
 fn answer(
     port: &Rc<RefCell<Port>>,
     framer: &Arc<dyn FramerDoor>,

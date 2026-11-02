@@ -21,7 +21,6 @@ fn code(line: &str) -> &str {
 }
 
 /// `code` past its leading attributes (`#[...]`, brackets nested) and its visibility (`pub`, or
-
 fn item(code: &str) -> &str {
     let mut t = code.trim_start();
     while let Some(rest) = t.strip_prefix("#[") {

@@ -250,7 +250,6 @@ fn an_op_with_no_open_instance_fails_naming_the_op() {
 }
 
 /// The tail's operation facts match the operations served by the door.
-
 #[test]
 fn the_tails_op_facts_are_the_ops_the_door_serves() {
     assert_eq!(tail().facts, FACT_ACCEPTS | FACT_DIALS);

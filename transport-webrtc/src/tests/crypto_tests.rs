@@ -86,7 +86,6 @@ fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
 }
 
 /// Keying material whose length is not its profile's never reaches the media stack's key
-
 #[test]
 fn keying_material_of_the_wrong_length_is_refused_and_nothing_is_held() {
     for (profile, len) in [
@@ -127,7 +126,6 @@ fn the_srtp_key_derivation_block_is_aes() {
 }
 
 /// `Debug` of a keyed shim prints neither the SRTP keying material nor an opened plaintext: a
-
 #[test]
 fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
     let canary: [u8; 4] = [0xCA, 0x4A, 0x21, 0x7E];
@@ -160,7 +158,6 @@ fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
 }
 
 /// Sending through a closed shim reports closed rather than pending.
-
 #[test]
 fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
     use str0m::crypto::dtls::{DtlsImplError, DtlsInstance};
@@ -180,7 +177,6 @@ fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
 }
 
 /// An unknown protection profile is not identified as AES_CM.
-
 #[test]
 fn an_unknown_protection_profile_is_not_called_aes_cm() {
     let why = "the keying material's protection profile is not AEAD-AES-GCM";
@@ -206,7 +202,6 @@ fn an_unknown_protection_profile_is_not_called_aes_cm() {
 }
 
 /// The AEAD-AES-256-GCM profile derives keys with an AES-256 block.
-
 #[test]
 fn the_256_bit_key_derivation_block_is_aes_256() {
     let key: Vec<u8> = (0..32).collect();
@@ -223,7 +218,6 @@ fn the_256_bit_key_derivation_block_is_aes_256() {
 }
 
 /// SHA-256 and HMAC-SHA1 match their standard test vectors.
-
 #[test]
 fn the_digests_meet_their_vectors() {
     assert_eq!(

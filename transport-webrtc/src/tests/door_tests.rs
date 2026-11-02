@@ -16,7 +16,6 @@ fn piece(bytes: &[u8], fields: bool, text: bool, end: bool) -> Piece {
 }
 
 /// A CLOSED DATA CHANNEL ENDS ITS STREAM BY FLAG (the transport contract: "streams end by flag";
-
 #[test]
 fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
     let end = piece(b"", false, false, true);
@@ -38,7 +37,6 @@ fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
 }
 
 /// The framer reads no setting: empty and `{}` are its settings; a key, or a blob that is no JSON
-
 #[test]
 fn a_setting_the_framer_does_not_read_is_refused() {
     for ok in [&b""[..], b"{}"] {
@@ -66,7 +64,6 @@ fn a_setting_the_framer_does_not_read_is_refused() {
 }
 
 /// The other pieces keep the bits they had: a message's text, a field block and its continuation,
-
 #[test]
 fn messages_and_field_blocks_keep_their_bits() {
     let text = piece(b"{\"type\":\"hello\"}", false, true, false);
@@ -87,7 +84,6 @@ fn messages_and_field_blocks_keep_their_bits() {
 }
 
 /// One association's state over a dialling framing that offers channel `events` (stream 1), not
-
 fn held1() -> Held1 {
     let now = Instant::now();
     let opening = Opening {
@@ -105,7 +101,6 @@ fn held1() -> Held1 {
 }
 
 /// An empty message emitted by the host reaches the framing.
-
 #[test]
 fn an_empty_message_from_the_host_reaches_the_framing() {
     let mut h = held1();
@@ -118,7 +113,6 @@ fn an_empty_message_from_the_host_reaches_the_framing() {
 }
 
 /// EMIT_TEXT IS READ ON THE CALL THAT COMPLETES THE FRAME (the contract's `EmitIn::flags`;
-
 #[test]
 fn the_text_bit_is_the_completing_calls() {
     let mut h = held1();
@@ -135,7 +129,6 @@ fn the_text_bit_is_the_completing_calls() {
 }
 
 /// Messages are gathered only for streams able to receive them.
-
 #[test]
 fn nothing_is_gathered_for_a_stream_that_cannot_take_it() {
     let mut h = held1();
@@ -156,7 +149,6 @@ fn nothing_is_gathered_for_a_stream_that_cannot_take_it() {
 }
 
 /// A poisoned association is refused rather than served with partial state.
-
 #[test]
 fn a_poisoned_association_is_never_served_torn() {
     let slot: Slot = Arc::new(Mutex::new(Some(held1())));
@@ -171,7 +163,6 @@ fn a_poisoned_association_is_never_served_torn() {
 }
 
 /// Failure and writable pieces retain their respective flags.
-
 #[test]
 fn a_failure_and_a_writable_piece_keep_their_bits() {
     let mut failed = piece(b"the channel refused the message", false, false, false);
@@ -186,7 +177,6 @@ fn a_failure_and_a_writable_piece_keep_their_bits() {
 }
 
 /// A gathered message beyond the channel cap fails its stream and releases its buffer.
-
 #[test]
 fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
     let mut h = held1();
@@ -199,7 +189,6 @@ fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
 }
 
 /// The tail states exactly the operations this door serves.
-
 #[test]
 fn the_tail_states_the_ops_the_door_serves() {
     use busbar_contract::abi::transport::{FACT_ACCEPTS, FACT_ADOPTS, FACT_DETACHES, FACT_DIALS};

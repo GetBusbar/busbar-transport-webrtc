@@ -39,7 +39,6 @@ impl DtlsProvider for Host {
 }
 
 /// The media stack's crypto provider: every primitive on `ring` ([`crate::crypto::Ring`]), the
-
 #[must_use]
 pub fn provider(ring: &'static crate::crypto::Ring) -> CryptoProvider {
     CryptoProvider {
@@ -51,7 +50,6 @@ pub fn provider(ring: &'static crate::crypto::Ring) -> CryptoProvider {
 }
 
 /// `config` presenting the host's PUBLIC certificate (its fingerprint is what this end's description
-
 #[must_use]
 pub fn present(config: RtcConfig, certificate: &[u8]) -> RtcConfig {
     config
@@ -72,7 +70,6 @@ const OPENED: u8 = 22;
 const SEAL: u8 = 23;
 
 /// The keying material's length under each admitted profile (RFC 7714 §12: two master keys and two
-
 const KEYING_LEN_128: usize = 2 * 16 + 2 * 12;
 /// `SRTP_AEAD_AES_256_GCM`'s.
 const KEYING_LEN_256: usize = 2 * 32 + 2 * 12;
@@ -85,7 +82,6 @@ pub const KEYING_LENGTH_REFUSED: &str =
 pub const CONNECTED_FRAME: [u8; 1] = [CONNECTED];
 
 /// Whether `datagram` lies in the RFC 7983 range the media stack hands its handshake slot. A far
-
 #[must_use]
 pub fn is_relay_range(datagram: &[u8]) -> bool {
     matches!(datagram.first(), Some(20..=63))
@@ -95,7 +91,6 @@ pub fn is_relay_range(datagram: &[u8]) -> bool {
 pub const PROFILE_REFUSED: &str = "the keying material's protection profile is not AEAD-AES-GCM";
 
 /// THE ONE TABLE of admitted protection profiles: the profile whose registry code is `code`, and
-
 fn admitted(code: u32, material: &[u8]) -> Result<(SrtpProfile, usize), &'static str> {
     /// `SRTP_AES128_CM_HMAC_SHA1_80` and `_32` (RFC 5764 §4.1.2).
     const AES_CM: [u32; 2] = [0x0001, 0x0002];
@@ -112,7 +107,6 @@ fn admitted(code: u32, material: &[u8]) -> Result<(SrtpProfile, usize), &'static
 }
 
 /// The datagram that hands the shim `material`, exported under the protection profile whose
-
 pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>, &'static str> {
     let (_, len) = admitted(profile, material)?;
     let mut frame = Zeroizing::new(Vec::with_capacity(2 + len));
@@ -131,7 +125,6 @@ pub fn is_keying(frame: &[u8]) -> bool {
 }
 
 /// Write into `frame` (a buffer the framer reuses, zeroed between uses) the datagram that hands
-
 pub fn opened_frame(frame: &mut Zeroizing<Vec<u8>>, plaintext: &[u8]) {
     frame.zeroize();
     frame.push(OPENED);
@@ -139,7 +132,6 @@ pub fn opened_frame(frame: &mut Zeroizing<Vec<u8>>, plaintext: &[u8]) {
 }
 
 /// The plaintext to seal, when `datagram` (one the media stack transmits) is the shim's; the
-
 pub fn sealed(mut datagram: Vec<u8>) -> Result<Vec<u8>, Vec<u8>> {
     if datagram.first() == Some(&SEAL) {
         datagram.remove(0);
@@ -221,7 +213,6 @@ impl Shim {
     }
 
     /// The host's secure layer exported `material` under the protection profile whose registry code
-
     pub fn keyed(&self, material: &[u8], profile: u32) -> Result<(), &'static str> {
         let (profile, _) = admitted(profile, material)?;
         let material = Zeroizing::new(material.to_vec());

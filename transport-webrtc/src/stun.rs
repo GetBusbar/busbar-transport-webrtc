@@ -49,7 +49,6 @@ pub enum Check {
 }
 
 /// Read `datagram` as a Binding request or success response; `None` for anything else, a message
-
 #[must_use]
 pub fn read(datagram: &[u8]) -> Option<Check> {
     let head = datagram.get(..HEADER_LEN)?;
@@ -76,7 +75,6 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
 }
 
 /// The attributes of a STUN body, `(type, value length)` each, in order, stopping at the first
-
 fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
     let mut at = 0_usize;
     std::iter::from_fn(move || {
@@ -93,7 +91,6 @@ fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
 }
 
 /// Whether `datagram`'s MESSAGE-INTEGRITY verifies under the short-term credential `key` (RFC 8489
-
 #[must_use]
 pub fn integrity_holds(datagram: &[u8], key: &[u8]) -> bool {
     let Some(head) = datagram.get(..HEADER_LEN) else {

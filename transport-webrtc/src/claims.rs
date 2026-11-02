@@ -11,7 +11,6 @@ use busbar_contract::abi::transport::{Claim, UNIT0_FIRST_DATAGRAM};
 pub(crate) const CLAIM_NAMES: &[AbiStr] = &[abi_str(crate::meta::KEY)];
 
 /// The claim's row: no selector forms (an association is reached through the rendezvous, never
-
 pub(crate) const CLAIMS: &[Claim] = &[{
     let mut c = Claim::EMPTY;
     c.selector_forms = abi_str("");

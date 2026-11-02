@@ -282,7 +282,6 @@ fn begun(host: &mut Host, channels: &[&[u8]]) -> Answer {
 }
 
 /// Dialing channels become streams 1, 2, ... in field order; an invalid channel label refuses begin.
-
 #[test]
 fn a_channel_field_it_cannot_offer_refuses_the_begin() {
     for bad in [&b""[..], &[0xff, 0xfe][..]] {
@@ -301,7 +300,6 @@ fn a_channel_field_it_cannot_offer_refuses_the_begin() {
 }
 
 /// Begin refuses when the host port address is absent.
-
 #[test]
 fn a_begin_without_the_host_ports_address_is_refused() {
     for local in [&b""[..], b"not an address"] {
@@ -320,7 +318,6 @@ fn a_begin_without_the_host_ports_address_is_refused() {
 }
 
 /// A host path with an address that cannot be parsed is refused.
-
 #[test]
 fn a_host_path_whose_address_does_not_parse_is_refused() {
     let mut host = Host::new(4096, 4096);
@@ -333,7 +330,6 @@ fn a_host_path_whose_address_does_not_parse_is_refused() {
 }
 
 /// A datagram larger than the complete host wire buffer fails the framing with an explanation.
-
 #[test]
 fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
     let p = door();
@@ -384,7 +380,6 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
 }
 
 /// A stream failure reason waits for a fresh answer rather than being truncated.
-
 #[test]
 fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
     let why = b"an empty message, which the media stack cannot send".to_vec();
@@ -417,7 +412,6 @@ fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
 }
 
 /// Output that does not fit one answer continues once in the next answer.
-
 #[test]
 fn what_does_not_fit_one_answer_continues_in_the_next() {
     let p = door();
@@ -471,7 +465,6 @@ fn finish(p: &Plugin<Transport>, host: &mut Host, token: u64) -> Answer {
 }
 
 /// A failing operation racing finish does not deadlock on the association and map locks.
-
 #[test]
 fn a_failing_op_racing_finish_never_deadlocks() {
     let (done, finished) = std::sync::mpsc::channel();
@@ -500,7 +493,6 @@ fn a_failing_op_racing_finish_never_deadlocks() {
 }
 
 /// EVERY REFUSAL OPENS WITH ITS OP (sibling alignment D7; AUDIT-RULES `<op>: <reason>`): an op on
-
 #[test]
 fn every_refusal_opens_with_its_op() {
     let p = door();

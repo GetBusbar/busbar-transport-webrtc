@@ -88,7 +88,6 @@ impl Host {
     }
 
     /// What the last answer yielded, as one deterministic line: the pieces (stream, flags, and for
-
     fn yielded(&self, o: &FramerOut) -> String {
         let n = (o.yielded.pieces_len as usize).min(self.pieces.len());
         let pieces: Vec<String> = self.pieces[..n]
@@ -255,7 +254,6 @@ fn expected() -> Vec<String> {
 }
 
 /// THE WITNESS: the dropped-in library states exactly the linked door's Statement, and the two
-
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let s = subject();
@@ -276,7 +274,6 @@ fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
 }
 
 /// A dropped-in library stating a different rendering is refused.
-
 #[test]
 fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {
     let s = subject();

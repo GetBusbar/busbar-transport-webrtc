@@ -99,13 +99,11 @@ fn register(bytes: &[u8], upstream: bool) {
 }
 
 /// Called after the real Vec's payload is initialized, before it is retained by the product.
-
 pub(crate) fn owned(bytes: &[u8]) {
     register(bytes, false);
 }
 
 /// KeyingMaterial::new in the pinned dependency creates a Vec whose entire initialized payload
-
 pub(crate) fn upstream(bytes: &[u8]) {
     register(bytes, true);
 }
@@ -470,7 +468,6 @@ fn opening() -> Opening {
 }
 
 /// Two ends through the rendezvous, ICE, verification and keying with `material`: a connected
-
 fn connected_with(material: &[u8]) -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
@@ -500,7 +497,6 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 }
 
 /// THE PLUGIN'S OWN COPIES on the accepted path: keying material presented to a verified
-
 #[cfg_attr(target_os = "linux", test)]
 fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     let material = key(5);
@@ -518,7 +514,6 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
 }
 
 /// KNOWN RESIDUAL, ASSERTED AS KNOWN (listed in the README): the published str0m 0.24.1 and
-
 #[cfg_attr(target_os = "linux", test)]
 fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     let material = key(6);
@@ -536,7 +531,6 @@ fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
 }
 
 /// Plaintext queued for sealing is zeroized when released.
-
 #[cfg_attr(target_os = "linux", test)]
 fn plaintext_queued_for_sealing_is_zeroised() {
     use str0m::crypto::dtls::{DtlsInstance, DtlsOutput};

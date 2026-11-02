@@ -12,7 +12,6 @@ busbar_test_kit::conformance_suite! {
 use busbar_plugin_loader::dispatch::LinkedRow;
 
 /// THE STATEMENT CARRIES THE DECLARES DOCUMENT (sibling alignment D11): the plugin's whole
-
 #[test]
 fn the_statement_carries_the_declares_document() {
     let row = LinkedRow::of(busbar_transport_webrtc::door).unwrap();
@@ -24,7 +23,6 @@ fn the_statement_carries_the_declares_document() {
 }
 
 /// The WebRTC framer offers no authentication point.
-
 #[test]
 fn the_statement_offers_no_auth_point() {
     use busbar_contract::abi::mechanism::extensions::get;

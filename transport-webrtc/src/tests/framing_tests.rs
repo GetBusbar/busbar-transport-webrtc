@@ -573,7 +573,6 @@ fn a_dialling_framing_with_nothing_to_offer_is_refused() {
 }
 
 /// A CHANNEL DELIVERS IN ORDER (an ordered data channel; the contract's stream is a sequence of
-
 #[test]
 fn a_held_message_is_never_overtaken() {
     let (mut dial, mut accept, mut now) = connected();
@@ -608,7 +607,6 @@ fn a_held_message_is_never_overtaken() {
 }
 
 /// A FAILED STREAM FAILS ALONE (the transport contract: "A failed stream fails alone: its siblings
-
 #[test]
 fn one_channels_overflow_never_fails_the_association() {
     let now = Instant::now();
@@ -637,7 +635,6 @@ fn one_channels_overflow_never_fails_the_association() {
 }
 
 /// THE RENDEZVOUS TERMS ARE BOUNDED: a far end's description that advertises any number of
-
 #[test]
 fn a_far_ends_candidates_are_read_up_to_a_bound() {
     let mut d = String::from(
@@ -665,7 +662,6 @@ fn a_far_ends_candidates_are_read_up_to_a_bound() {
 }
 
 /// An ICE disconnect retains the association while recovery is still possible.
-
 #[test]
 fn an_ice_disconnect_holds_the_association_until_it_fails() {
     let now = Instant::now();
@@ -698,7 +694,6 @@ fn an_ice_disconnect_holds_the_association_until_it_fails() {
 }
 
 /// A channel message arriving at the queue cap fails its stream with an explanation.
-
 #[test]
 fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     let (mut dial, _accept, _now) = connected();
@@ -731,7 +726,6 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
 }
 
 /// A channel label containing a line break fails its stream without forging a field.
-
 #[test]
 fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
     let now = Instant::now();
@@ -762,7 +756,6 @@ fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
 }
 
 /// An empty message fails its channel with an explanation rather than wedging it.
-
 #[test]
 fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
     let (mut dial, mut accept, mut now) = connected();
@@ -783,7 +776,6 @@ fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
 }
 
 /// A channel closed by the far end accepts no further messages.
-
 #[test]
 fn a_channel_the_far_end_closed_takes_no_more_messages() {
     let now = Instant::now();
@@ -805,7 +797,6 @@ fn a_channel_the_far_end_closed_takes_no_more_messages() {
 }
 
 /// Closing a channel and repointing a path release their bookkeeping.
-
 #[test]
 fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
     let now = Instant::now();
@@ -848,7 +839,6 @@ fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
 }
 
 /// A forged STUN binding success nominates no path, as RFC 8489 and RFC 8445 require.
-
 #[test]
 fn a_forged_binding_success_nominates_nothing() {
     let (mut dial, _accept, now) = connected();
@@ -882,7 +872,6 @@ fn stun_message(kind: u16, len: u16, attrs: &[u8]) -> Vec<u8> {
 }
 
 /// Only a well-framed STUN check is read, as RFC 8489 requires.
-
 #[test]
 fn only_a_well_framed_check_is_read() {
     let use_candidate = [0x00, 0x25, 0, 0];
@@ -912,7 +901,6 @@ fn only_a_well_framed_check_is_read() {
 }
 
 /// Each fingerprint octet is exactly two hexadecimal digits, as RFC 4572 requires.
-
 #[test]
 fn a_fingerprint_octet_is_exactly_two_hex_digits() {
     let with = |octets: &str| {
@@ -934,7 +922,6 @@ fn a_fingerprint_octet_is_exactly_two_hex_digits() {
 }
 
 /// A host port address refused by the media stack refuses the framing.
-
 #[test]
 fn a_host_port_address_the_stack_refuses_refuses_the_framing() {
     for addr in ["0.0.0.0:3478", "[::]:3478", "224.0.0.1:3478"] {
@@ -967,7 +954,6 @@ fn stream_headed(e: &End, with: &[u8]) -> u64 {
 }
 
 /// Application data is not read before verification.
-
 #[test]
 fn valid_application_data_is_not_read_before_verification() {
     let (mut dial, mut accept, now) = connected();
@@ -1014,7 +1000,6 @@ fn valid_application_data_is_not_read_before_verification() {
 }
 
 /// A genuine media frame from an unbound path is not read.
-
 #[test]
 fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
     let (mut dial, mut accept, now) = connected();
@@ -1056,7 +1041,6 @@ fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
 }
 
 /// A far-end datagram in the relay range is never fed to the shim.
-
 #[test]
 fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
     let (mut dial, mut accept, mut now) = connected();
@@ -1080,7 +1064,6 @@ fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
 }
 
 /// A disconnect after recovery starts a fresh outage window.
-
 #[test]
 fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
     let t0 = Instant::now();
@@ -1108,7 +1091,6 @@ fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
 }
 
 /// A full channel becomes writable again after it drains.
-
 #[test]
 fn a_full_channel_is_writable_again_once_drained() {
     let (mut dial, mut accept, mut now) = connected();
@@ -1134,7 +1116,6 @@ fn a_full_channel_is_writable_again_once_drained() {
 }
 
 /// Closing a data channel ends the corresponding far-end stream.
-
 #[test]
 fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
     let (mut dial, mut accept, mut now) = connected();
@@ -1155,7 +1136,6 @@ fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
 }
 
 /// Route, nomination, and message caps bound retained work.
-
 #[test]
 fn the_route_nominating_and_message_caps_hold() {
     let now = Instant::now();
@@ -1196,7 +1176,6 @@ fn the_route_nominating_and_message_caps_hold() {
 }
 
 /// The local description states its certificate's SHA-256 fingerprint.
-
 #[test]
 fn the_description_states_the_certificates_sha_256() {
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), Instant::now());
@@ -1213,7 +1192,6 @@ fn the_description_states_the_certificates_sha_256() {
 }
 
 /// An association keyed with AEAD-AES-256-GCM carries media and messages in both directions.
-
 #[test]
 fn an_association_keyed_under_aes_256_gcm_carries_both_ways() {
     let (mut dial, mut accept, mut now) = connected_under(PROFILE_AEAD_AES_256_GCM, 88);

@@ -14,11 +14,9 @@ pub const KEY: &str = "webrtc";
 pub(crate) const COMPOSES_OVER: &[&str] = &[];
 
 /// Whether this transport carries sessions: yes, an association is one (its claim row states
-
 pub(crate) const SESSION: bool = true;
 
 /// The transport kind's tail: a datagram framer, composing over nothing (the port is the host's),
-
 pub(crate) const TAIL: TransportTail = {
     let mut t = TransportTail::EMPTY.with_claim_rows(crate::claims::CLAIMS);
     t.role = ROLE_FRAMER;

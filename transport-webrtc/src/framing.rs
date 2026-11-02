@@ -32,25 +32,19 @@ pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 /// The most messages held for one channel (not yet open, or with no room in the stack).
 const MAX_HELD: usize = 256;
 /// The most routes, and the most data pieces, queued for the host at once: past it a route is
-
 pub(crate) const MAX_QUEUED: usize = MAX_HELD * 4;
 
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
-
 const ICE_FAILED_AFTER: Duration = Duration::from_secs(30);
 /// The most nominating checks awaiting their answer.
 const MAX_NOMINATING: usize = 64;
 /// The most candidates read from the far end's description: the rendezvous terms stay small enough
-
 const MAX_CANDIDATES: usize = 32;
 /// The largest message a channel carries: the media stack's send buffer (its default), which a
-
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Why an empty channel message fails its stream: the media stack cannot send one (its SCTP writes
-
 const EMPTY_REFUSED: &str = "an empty message, which the media stack cannot send";
 /// A channel's held messages at which its stream is FULL (the host emits nothing more on it until
-
 const HIGH_WATER: usize = 64;
 /// ... and at or below which a full stream is writable again.
 const LOW_WATER: usize = 16;
@@ -207,7 +201,6 @@ impl std::fmt::Debug for Framing {
 
 impl Drop for Framing {
     /// This framing's own copy of its check secret is cleared with it (the keying material it has
-
     fn drop(&mut self) {
         self.local_creds.pass.zeroize();
     }
@@ -280,7 +273,6 @@ fn read_remote(description: &str) -> Result<Remote, Failed> {
 }
 
 /// Whether this end opens the handshake. The media stack takes the role opposite the far end's
-
 fn initiates(description: &str) -> bool {
     values(description, "a=setup:")
         .next()
@@ -288,14 +280,12 @@ fn initiates(description: &str) -> bool {
 }
 
 /// A fresh check credential: `n` random bytes as lower-case hex (RFC 8445 §5.3: the user at least
-
 fn credential(n: usize) -> Result<String, Failed> {
     let bytes: [u8; 32] = crate::crypto::random().ok_or("the host has no randomness")?;
     Ok(bytes[..n].iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// How many 48 kHz samples an Opus packet spans, from its table-of-contents byte (RFC 6716 §3.1).
-
 #[must_use]
 pub fn opus_samples(packet: &[u8]) -> u64 {
     let Some(&toc) = packet.first() else {
@@ -318,7 +308,6 @@ pub fn opus_samples(packet: &[u8]) -> u64 {
 
 impl Framing {
     /// Begin a framing on `side`. `certificate` is the host's public certificate (its fingerprint is
-
     pub fn begin(
         side: Side,
         certificate: &[u8],
@@ -445,7 +434,6 @@ impl Framing {
     }
 
     /// The host port's own address: the one candidate this end advertises, once.
-
     pub fn local(&mut self, addr: SocketAddr) -> Result<(), Failed> {
         if self.local.is_some() {
             return Ok(());
@@ -466,7 +454,6 @@ impl Framing {
     }
 
     /// Path `path` is at `addr` (path `0` is none): an address it pointed at before, or a path
-
     fn point(&mut self, path: u32, addr: SocketAddr) {
         if path == 0 {
             return;
@@ -484,7 +471,6 @@ impl Framing {
     }
 
     /// The far end's session description.
-
     pub fn rendezvous(&mut self, description: &[u8], now: Instant) -> Result<(), Failed> {
         let text =
             std::str::from_utf8(description).map_err(|_| "a description that is not text")?;
@@ -530,7 +516,6 @@ impl Framing {
     }
 
     /// The host's state at this call: the bound path, the verified bit, and the keying-material item
-
     pub fn host(
         &mut self,
         bound: u32,
@@ -574,7 +559,6 @@ impl Framing {
     }
 
     /// Hand the shim what it is owed, once the description pair settled (before that, the media
-
     fn flush_relay(&mut self, now: Instant) {
         if !self.settled {
             return;
@@ -681,7 +665,6 @@ impl Framing {
     }
 
     /// Remember a nominating check, holding the set bounded (a flood of checks evicts the set,
-
     fn track(&mut self, txid: [u8; 12], path: u32) {
         if self.nominating.len() >= MAX_NOMINATING {
             self.nominating.clear();
@@ -704,7 +687,6 @@ impl Framing {
     }
 
     /// A message for the far end on `stream`.
-
     pub fn emit(
         &mut self,
         stream: u64,
@@ -795,7 +777,6 @@ impl Framing {
     }
 
     /// Stream `stream` fails, alone: its held messages are dropped and the layer above gets its
-
     pub fn fail_stream(&mut self, stream: u64, why: &str) {
         if !self.carries(stream) || !self.failed_sids.insert(stream) {
             return;
@@ -826,7 +807,6 @@ impl Framing {
     }
 
     /// Whether `stream` was a data channel that has since closed (its END piece told the host):
-
     #[must_use]
     pub fn stream_ended(&self, stream: u64) -> bool {
         (1..self.next_channel).contains(&stream) && !self.channel_by_stream.contains_key(&stream)
@@ -965,7 +945,6 @@ impl Framing {
     }
 
     /// A held queue's messages, in order, while the media stack takes them. A full stream drained
-
     fn flush_held(&mut self, stream: u64) {
         let Some(id) = self.channel_by_stream.get(&stream).copied() else {
             return;
@@ -1220,7 +1199,6 @@ impl Framing {
     }
 
     /// The messages held for `stream`, `(text, bytes)` each, in order: what a test reads of the
-
     #[cfg(test)]
     pub(crate) fn held(&self, stream: u64) -> Vec<(bool, Vec<u8>)> {
         self.held

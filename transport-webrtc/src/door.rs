@@ -33,7 +33,6 @@ pub use crate::meta::KEY;
 use crate::meta::TAIL;
 
 /// THE AUTH POINTS THIS DOOR OFFERS: none. An association has no head and the door makes no auth
-
 const OFFERED_POINTS: [u8; 4] = 0_u32.to_le_bytes();
 
 busbar_contract::statement_extensions!(
@@ -85,7 +84,6 @@ impl Held1 {
 }
 
 /// One association behind its own lock, so one association's crypto never waits on another's:
-
 type Slot = Arc<Mutex<Option<Held1>>>;
 
 /// The framings one instance holds.
@@ -134,7 +132,6 @@ impl Framings {
 }
 
 /// The association's lock. A panic that unwound while an op held it left the state torn: the
-
 fn hold(slot: &Mutex<Option<Held1>>) -> MutexGuard<'_, Option<Held1>> {
     hold_torn(slot).0
 }
@@ -197,7 +194,6 @@ fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
 }
 
 /// Read the lane's host state into the framing: new paths, the bound path, the verified bit and
-
 fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Result<(), String> {
     let paths = lane
         .paths()
@@ -221,7 +217,6 @@ fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Resu
 }
 
 /// Answer into the sink and the lane what the framing owes: routes (bytes in `wire`), pieces (bytes
-
 fn answer(
     h: &mut Held1,
     sink: Lent<'_, FramerSink>,
@@ -377,7 +372,6 @@ fn answer(
 }
 
 /// Run `op` on the framing `token` names, then answer what it owes, with the yield flags `op`
-
 fn with(
     inst: &Instance<'_, State>,
     t: &OpTexts,
@@ -462,7 +456,6 @@ busbar_contract::not_served! {
 }
 
 /// What a dialling framing's opening fields offer.
-
 fn opening(i: &Lent<'_, BeginIn>) -> Result<Opening, &'static str> {
     let mut o = Opening::default();
     for f in i.fields().iter() {
@@ -633,7 +626,6 @@ impl SafeSlot for Emit {
 }
 
 /// One piece of a message for `stream` from the host (`end`: it completes the message), gathered
-
 fn emit(
     h: &mut Held1,
     stream: u64,
@@ -774,7 +766,6 @@ busbar_contract::plugin_door! {
 }
 
 /// The `PIECE_*` bits of one piece of the framing's `p`: `whole` when it carries the last of its
-
 fn piece_flags(p: &Piece, continued: bool, whole: bool) -> u16 {
     if p.end {
         return PIECE_END | PIECE_END_OF_FRAME;
