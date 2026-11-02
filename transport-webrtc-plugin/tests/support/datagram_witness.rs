@@ -3,6 +3,7 @@
 
 //! **ONE FRAMER, BOTH DOORS, ONE TABLE** — the `webrtc` framer compiled in (`linked::door`, the
 
+use super::abi as conf;
 use busbar_contract::abi::mechanism::call::{AbiStr, Field};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, DatagramLane, DatagramRoute, EncodeIn, FinishIn, FramePiece,
@@ -13,8 +14,6 @@ use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts
 use busbar_plugin_loader::dispatch::{
     load_dropped, Called, Frame, InFrame, LinkedRow, OutFrame, Plugin,
 };
-#[path = "abi.rs"]
-pub mod conf;
 use busbar_plugin_loader::dispatch::{
     load_linked, rendering_of_library, DispatchConfig, Dispatcher,
 };
@@ -199,26 +198,26 @@ fn fold(p: &Plugin<Transport>) -> Vec<String> {
 
     t.push(format!(
         "listen {}",
-        conf::called(&go::<ListenIn, ListenOut>(&p, slot::LISTEN, conf::input()).0)
+        conf::called(&go::<ListenIn, ListenOut>(p, slot::LISTEN, conf::input()).0)
     ));
     t.push(format!(
         "locate {}",
-        conf::called(&go::<LocateIn, LocateOut>(&p, slot::LOCATE, conf::input()).0)
+        conf::called(&go::<LocateIn, LocateOut>(p, slot::LOCATE, conf::input()).0)
     ));
     let mut host = Host::new();
     let mut e: EncodeIn = conf::input();
     e.sink = host.sink();
     t.push(format!(
         "encode {}",
-        conf::called(&go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0)
+        conf::called(&go::<EncodeIn, FramerOut>(p, slot::ENCODE, e).0)
     ));
 
     t.push(format!(
         "begin without a lane {}",
-        begin(&p, SIDE_DIAL, false).0
+        begin(p, SIDE_DIAL, false).0
     ));
 
-    let (line, token) = begin(&p, SIDE_DIAL, true);
+    let (line, token) = begin(p, SIDE_DIAL, true);
     t.push(format!("begin dial {line}"));
 
     let mut host = Host::new();
@@ -228,19 +227,19 @@ fn fold(p: &Plugin<Transport>) -> Vec<String> {
         let mut i: IngestIn = conf::input();
         (i.framing, i.bytes, i.len, i.sink, i.lane) =
             (token, junk.as_ptr(), junk.len(), host.sink(), &l);
-        let (answer, output) = go::<IngestIn, FramerOut>(&p, slot::INGEST, i);
+        let (answer, output) = go::<IngestIn, FramerOut>(p, slot::INGEST, i);
         host.yielded(answer.outcome, &output);
         t.push(format!("{step} {}", conf::called(&answer)));
     }
 
-    let (line, token) = begin(&p, SIDE_ACCEPT, true);
+    let (line, token) = begin(p, SIDE_ACCEPT, true);
     t.push(format!("begin accept {line}"));
     for step in ["finish", "finish again"] {
         let mut host = Host::new();
         let l = host.lane(0);
         let mut i: FinishIn = conf::input();
         (i.framing, i.sink, i.lane) = (token, host.sink(), &l);
-        let (called, o): (Called, FramerOut) = go(&p, slot::FINISH, i);
+        let (called, o): (Called, FramerOut) = go(p, slot::FINISH, i);
         t.push(format!(
             "{step} {} {}",
             conf::called(&called),
@@ -258,7 +257,7 @@ fn fold(p: &Plugin<Transport>) -> Vec<String> {
     let (answer, output) = go::<IngestIn, FramerOut>(p, slot::INGEST, input);
     host.yielded(answer.outcome, &output);
     t.push(format!("ingest on no framing {}", conf::called(&answer)));
-    t.push(format!("close {}", conf::called(&conf::close(&p))));
+    t.push(format!("close {}", conf::called(&conf::close(p))));
     t
 }
 
