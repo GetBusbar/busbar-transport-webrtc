@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NO ALLOCATION ON THE HOT PATH (THE DESIGN §11.2): sealing and opening one SRTP packet, the
+//! Sealing and opening SRTP packets allocate nothing on the hot path.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

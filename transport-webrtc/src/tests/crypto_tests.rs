@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! SRTP IS AEAD-AES-GCM ONLY (THE DESIGN l.753): the provider's `AES_CM` cipher refuses every
+//! SRTP supports AEAD-AES-GCM profiles; the `AES_CM` provider refuses unsupported operations.
 
 use super::*;
 use crate::framing::{PROFILE_AEAD_AES_128_GCM, PROFILE_AEAD_AES_256_GCM};
@@ -159,7 +159,7 @@ fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
     assert!(out.contains("<redacted"), "no redaction marker: {out}");
 }
 
-/// A CLOSED SHIM SAYS SO (codeaudit shim.rs:370): data sent after the secure session closed is
+/// Sending through a closed shim reports closed rather than pending.
 
 #[test]
 fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
@@ -179,7 +179,7 @@ fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
     ));
 }
 
-/// A PROFILE THAT IS NOT AES_CM IS NOT CALLED AES_CM (codeaudit shim.rs:259): keying material
+/// An unknown protection profile is not identified as AES_CM.
 
 #[test]
 fn an_unknown_protection_profile_is_not_called_aes_cm() {
@@ -205,7 +205,7 @@ fn an_unknown_protection_profile_is_not_called_aes_cm() {
     }
 }
 
-/// THE AEAD-AES-256-GCM PROFILE'S KEY DERIVATION BLOCK IS AES-256 (codeaudit tests crypto.rs:70):
+/// The AEAD-AES-256-GCM profile derives keys with an AES-256 block.
 
 #[test]
 fn the_256_bit_key_derivation_block_is_aes_256() {
@@ -222,7 +222,7 @@ fn the_256_bit_key_derivation_block_is_aes_256() {
     );
 }
 
-/// THE DIGESTS ARE THE STANDARD ONES (codeaudit tests crypto.rs:357): SHA-256 (RFC 6234 "abc"),
+/// SHA-256 and HMAC-SHA1 match their standard test vectors.
 
 #[test]
 fn the_digests_meet_their_vectors() {

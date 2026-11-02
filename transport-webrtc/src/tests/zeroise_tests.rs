@@ -535,7 +535,7 @@ fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     assert_eq!(freed_unzeroed(6), 0, "the plugin's own copies are zeroised");
 }
 
-/// PLAINTEXT QUEUED FOR SEALING IS ZEROISED TOO (codeaudit W10; the shim's doc: relayed plaintext
+/// Plaintext queued for sealing is zeroized when released.
 
 #[cfg_attr(target_os = "linux", test)]
 fn plaintext_queued_for_sealing_is_zeroised() {

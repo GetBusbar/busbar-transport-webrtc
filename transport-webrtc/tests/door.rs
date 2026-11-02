@@ -249,7 +249,7 @@ fn an_op_with_no_open_instance_fails_naming_the_op() {
     assert!(r.1.starts_with("ingest: "), "{}", r.1);
 }
 
-/// The tail states exactly the ops the door serves (ruling R1: a framer states its ops): `begin`
+/// The tail's operation facts match the operations served by the door.
 
 #[test]
 fn the_tails_op_facts_are_the_ops_the_door_serves() {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FRAMER HOLDS NO PROCESS-GLOBAL STATE (THE DESIGN §2: "A plugin holds no process-global
+//! The framer keeps mutable state per instance rather than in process-global slots.
 
 use std::path::{Path, PathBuf};
 

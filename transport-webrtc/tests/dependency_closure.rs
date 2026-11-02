@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE EXCEPTION TO `ring`-ONLY, CONFINED (THE DESIGN l.753, "Datagram media"): the
+//! The AES dependency exception is confined to WebRTC SRTP key derivation.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

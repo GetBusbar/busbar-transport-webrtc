@@ -23,7 +23,7 @@ fn the_statement_carries_the_declares_document() {
     );
 }
 
-/// THE FRAMER OFFERS NO AUTH POINT (sibling alignment D12, ruling R2): an association has no head
+/// The WebRTC framer offers no authentication point.
 
 #[test]
 fn the_statement_offers_no_auth_point() {

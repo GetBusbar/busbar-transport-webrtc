@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FRAMER HOLDS NO DTLS (THE DESIGN l.749-757 and the who-sees-what row, l.657): DTLS runs in
+//! DTLS runs outside the framer.
 
 use std::path::{Path, PathBuf};
 

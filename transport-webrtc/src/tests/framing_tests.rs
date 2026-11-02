@@ -664,7 +664,7 @@ fn a_far_ends_candidates_are_read_up_to_a_bound() {
     );
 }
 
-/// ICE'S "DISCONNECTED" IS RECOVERABLE (Q128 transport-webrtc LOW, reader r171 on 78941e3; RFC
+/// An ICE disconnect retains the association while recovery is still possible.
 
 #[test]
 fn an_ice_disconnect_holds_the_association_until_it_fails() {
@@ -697,7 +697,7 @@ fn an_ice_disconnect_holds_the_association_until_it_fails() {
     );
 }
 
-/// AN ACKNOWLEDGED MESSAGE IS NEVER DROPPED SILENTLY (Q128 transport-webrtc LOW, reader r171 on
+/// A channel message arriving at the queue cap fails its stream with an explanation.
 
 #[test]
 fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
@@ -730,7 +730,7 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     );
 }
 
-/// A FIELD VALUE NEVER HOLDS CR OR LF (the transport contract's field block; codeaudit W1): a far
+/// A channel label containing a line break fails its stream without forging a field.
 
 #[test]
 fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
@@ -761,7 +761,7 @@ fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
     );
 }
 
-/// AN EMPTY MESSAGE IS NEVER DROPPED SILENTLY, AND NEVER WEDGES ITS CHANNEL (codeaudit W3). The
+/// An empty message fails its channel with an explanation rather than wedging it.
 
 #[test]
 fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
@@ -782,7 +782,7 @@ fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
     assert_eq!(dial.f.failure(), None, "the association carries on");
 }
 
-/// A CHANNEL THE FAR END CLOSED TAKES NO MORE MESSAGES (codeaudit W6): its stream ended with its
+/// A channel closed by the far end accepts no further messages.
 
 #[test]
 fn a_channel_the_far_end_closed_takes_no_more_messages() {
@@ -804,7 +804,7 @@ fn a_channel_the_far_end_closed_takes_no_more_messages() {
     assert!(ours[0].end);
 }
 
-/// A CLOSED CHANNEL AND A RE-POINTED PATH LEAVE NOTHING BEHIND (codeaudit W12): a far end that
+/// Closing a channel and repointing a path release their bookkeeping.
 
 #[test]
 fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
@@ -847,7 +847,7 @@ fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
     assert_eq!(dial.f.addrs.get(&addr("192.0.2.4:1000")), Some(&8));
 }
 
-/// A FORGED BINDING SUCCESS NOMINATES NOTHING (codeaudit W8; RFC 8489 §14.5, RFC 8445 §7.2.5.2:
+/// A forged STUN binding success nominates no path, as RFC 8489 and RFC 8445 require.
 
 #[test]
 fn a_forged_binding_success_nominates_nothing() {
@@ -881,7 +881,7 @@ fn stun_message(kind: u16, len: u16, attrs: &[u8]) -> Vec<u8> {
     m
 }
 
-/// ONLY A WELL-FRAMED STUN MESSAGE IS READ AS A CHECK (codeaudit stun.rs:35; RFC 8489 §5: the
+/// Only a well-framed STUN check is read, as RFC 8489 requires.
 
 #[test]
 fn only_a_well_framed_check_is_read() {
@@ -911,7 +911,7 @@ fn only_a_well_framed_check_is_read() {
     );
 }
 
-/// A FINGERPRINT IS TWO HEX DIGITS PER OCTET (codeaudit framing.rs:246; RFC 4572 §5): a token of
+/// Each fingerprint octet is exactly two hexadecimal digits, as RFC 4572 requires.
 
 #[test]
 fn a_fingerprint_octet_is_exactly_two_hex_digits() {
@@ -933,7 +933,7 @@ fn a_fingerprint_octet_is_exactly_two_hex_digits() {
     }
 }
 
-/// THE ONE CANDIDATE ADVERTISED IS ONE THE MEDIA STACK TAKES (codeaudit framing.rs:463/483): a
+/// A host port address refused by the media stack refuses the framing.
 
 #[test]
 fn a_host_port_address_the_stack_refuses_refuses_the_framing() {
@@ -966,7 +966,7 @@ fn stream_headed(e: &End, with: &[u8]) -> u64 {
         .expect("a stream with that head")
 }
 
-/// VALID APPLICATION DATA IS NOT READ BEFORE VERIFICATION (codeaudit tests framing_tests.rs:288):
+/// Application data is not read before verification.
 
 #[test]
 fn valid_application_data_is_not_read_before_verification() {
@@ -1013,7 +1013,7 @@ fn valid_application_data_is_not_read_before_verification() {
     assert_eq!(heard(&accept, media).last(), Some(&OPUS.to_vec()));
 }
 
-/// A REPLAYED MEDIA FRAME FROM AN UNPROVEN PATH IS NOT READ (codeaudit tests
+/// A genuine media frame from an unbound path is not read.
 
 #[test]
 fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
@@ -1055,7 +1055,7 @@ fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
     );
 }
 
-/// THE FRAMER'S LINE TO ITS SHIM IS ITS OWN (codeaudit tests framing.rs:646): a far end's
+/// A far-end datagram in the relay range is never fed to the shim.
 
 #[test]
 fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
@@ -1079,7 +1079,7 @@ fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
     );
 }
 
-/// "DISCONNECTED" THAT COMES BACK STARTS THE WINDOW AFRESH (codeaudit tests framing.rs:1057): a
+/// A disconnect after recovery starts a fresh outage window.
 
 #[test]
 fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
@@ -1107,7 +1107,7 @@ fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
     );
 }
 
-/// BACK-PRESSURE IS A PROTOCOL (codeaudit tests framing.rs:977): a channel whose held messages
+/// A full channel becomes writable again after it drains.
 
 #[test]
 fn a_full_channel_is_writable_again_once_drained() {
@@ -1133,7 +1133,7 @@ fn a_full_channel_is_writable_again_once_drained() {
     assert_eq!(writable, 1, "one writable piece");
 }
 
-/// A CLOSED DATA CHANNEL ENDS ITS STREAM (codeaudit tests framing.rs:1106): one end closes the
+/// Closing a data channel ends the corresponding far-end stream.
 
 #[test]
 fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
@@ -1154,7 +1154,7 @@ fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
     );
 }
 
-/// THE NAMED CAPS HOLD (codeaudit tests framing.rs:991): the route queue never grows past
+/// Route, nomination, and message caps bound retained work.
 
 #[test]
 fn the_route_nominating_and_message_caps_hold() {
@@ -1195,7 +1195,7 @@ fn the_route_nominating_and_message_caps_hold() {
         && p.bytes == b"a message larger than the channel can ever send"));
 }
 
-/// THIS END'S DESCRIPTION STATES ITS CERTIFICATE'S OWN FINGERPRINT (codeaudit tests
+/// The local description states its certificate's SHA-256 fingerprint.
 
 #[test]
 fn the_description_states_the_certificates_sha_256() {
@@ -1212,7 +1212,7 @@ fn the_description_states_the_certificates_sha_256() {
     assert_eq!(stated.trim().to_ascii_uppercase(), want.join(":"));
 }
 
-/// AN ASSOCIATION KEYED UNDER AEAD-AES-256-GCM CARRIES MEDIA AND MESSAGES (codeaudit tests
+/// An association keyed with AEAD-AES-256-GCM carries media and messages in both directions.
 
 #[test]
 fn an_association_keyed_under_aes_256_gcm_carries_both_ways() {

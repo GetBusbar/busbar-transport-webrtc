@@ -281,7 +281,7 @@ fn begun(host: &mut Host, channels: &[&[u8]]) -> Answer {
     begin(&p, host, channels)
 }
 
-/// A DIALLING FRAMING'S CHANNELS ARE STREAMS 1, 2, ... IN FIELD ORDER (the door's doc; codeaudit
+/// Dialing channels become streams 1, 2, ... in field order; an invalid channel label refuses begin.
 
 #[test]
 fn a_channel_field_it_cannot_offer_refuses_the_begin() {
@@ -300,7 +300,7 @@ fn a_channel_field_it_cannot_offer_refuses_the_begin() {
     assert_eq!(a.outcome, Outcome::Ready);
 }
 
-/// THE HOST PORT'S ADDRESS IS READ AT BEGIN (codeaudit door.rs:529): with none, or one that does
+/// Begin refuses when the host port address is absent.
 
 #[test]
 fn a_begin_without_the_host_ports_address_is_refused() {
@@ -319,7 +319,7 @@ fn a_begin_without_the_host_ports_address_is_refused() {
     }
 }
 
-/// A HOST PATH IS READ WHOLE OR REFUSED (codeaudit door.rs:187): a path whose address does not
+/// A host path with an address that cannot be parsed is refused.
 
 #[test]
 fn a_host_path_whose_address_does_not_parse_is_refused() {
@@ -332,7 +332,7 @@ fn a_host_path_whose_address_does_not_parse_is_refused() {
     );
 }
 
-/// A DATAGRAM THE HOST'S WIRE BUFFER CAN NEVER HOLD FAILS THE FRAMING IN WORDS (codeaudit W4), as
+/// A datagram larger than the complete host wire buffer fails the framing with an explanation.
 
 #[test]
 fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
@@ -383,7 +383,7 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
     );
 }
 
-/// A STREAM'S FAILURE REASON IS NEVER CUT TO THE ROOM LEFT (codeaudit W5): like a field block, a
+/// A stream failure reason waits for a fresh answer rather than being truncated.
 
 #[test]
 fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
@@ -416,7 +416,7 @@ fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
     }
 }
 
-/// WHAT DOES NOT FIT ONE ANSWER CONTINUES IN THE NEXT, ONCE (codeaudit tests door.rs:651): over a
+/// Output that does not fit one answer continues once in the next answer.
 
 #[test]
 fn what_does_not_fit_one_answer_continues_in_the_next() {
@@ -470,7 +470,7 @@ fn finish(p: &Plugin<Transport>, host: &mut Host, token: u64) -> Answer {
     host.answer(outcome, why, &o)
 }
 
-/// ONE ASSOCIATION'S LOCK AND THE MAP'S ARE NEVER TAKEN IN OPPOSITE ORDERS (codeaudit tests
+/// A failing operation racing finish does not deadlock on the association and map locks.
 
 #[test]
 fn a_failing_op_racing_finish_never_deadlocks() {

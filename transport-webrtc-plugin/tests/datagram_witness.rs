@@ -275,7 +275,7 @@ fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     }
 }
 
-/// THE RED ARM: the dropped-in library admitted against a rendering that is not its own (one byte
+/// A dropped-in library stating a different rendering is refused.
 
 #[test]
 fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {

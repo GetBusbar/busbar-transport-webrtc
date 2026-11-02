@@ -104,7 +104,7 @@ fn held1() -> Held1 {
     }
 }
 
-/// AN EMPTY MESSAGE THE HOST EMITS IS NEVER DROPPED SILENTLY (codeaudit W3): the door hands it to
+/// An empty message emitted by the host reaches the framing.
 
 #[test]
 fn an_empty_message_from_the_host_reaches_the_framing() {
@@ -134,7 +134,7 @@ fn the_text_bit_is_the_completing_calls() {
     );
 }
 
-/// A MESSAGE IS GATHERED ONLY FOR A STREAM THAT CAN TAKE IT (codeaudit W13): a stream the framing
+/// Messages are gathered only for streams able to receive them.
 
 #[test]
 fn nothing_is_gathered_for_a_stream_that_cannot_take_it() {
@@ -155,7 +155,7 @@ fn nothing_is_gathered_for_a_stream_that_cannot_take_it() {
     );
 }
 
-/// A POISONED ASSOCIATION IS NEVER SERVED TORN (codeaudit W7): a panic that unwound while an op
+/// A poisoned association is refused rather than served with partial state.
 
 #[test]
 fn a_poisoned_association_is_never_served_torn() {
@@ -170,7 +170,7 @@ fn a_poisoned_association_is_never_served_torn() {
     assert!(hold(&slot).is_none(), "the torn state is not served");
 }
 
-/// A FAILED STREAM'S PIECE AND A WRITABLE PIECE KEEP THEIR BITS (codeaudit tests door.rs:771): the
+/// Failure and writable pieces retain their respective flags.
 
 #[test]
 fn a_failure_and_a_writable_piece_keep_their_bits() {
@@ -185,7 +185,7 @@ fn a_failure_and_a_writable_piece_keep_their_bits() {
     assert_eq!(piece_flags(&writable, false, true), PIECE_WRITABLE);
 }
 
-/// A MESSAGE GATHERED PAST WHAT A CHANNEL CAN CARRY FAILS ITS STREAM AND LETS GO OF IT (codeaudit
+/// A gathered message beyond the channel cap fails its stream and releases its buffer.
 
 #[test]
 fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
@@ -198,7 +198,7 @@ fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
     assert!(h.gathering.is_empty(), "and nothing of it is kept");
 }
 
-/// THE TAIL STATES EXACTLY THE OPS THIS DOOR SERVES (sibling alignment D1, ruling R1: every framer
+/// The tail states exactly the operations this door serves.
 
 #[test]
 fn the_tail_states_the_ops_the_door_serves() {
