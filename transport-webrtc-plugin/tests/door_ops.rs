@@ -19,7 +19,6 @@ pub mod conf;
 use busbar_plugin_loader::dispatch::{load_linked, DispatchConfig, Dispatcher, LinkedRow};
 use busbar_transport_webrtc::framing::{Framing, Opening, Side, DESCRIPTION};
 
-const CDYLIB: &str = "busbar_transport_webrtc_plugin";
 const LOCAL: &str = "198.51.100.1:40000";
 const FAR: &str = "203.0.113.9:3478";
 const CERT: &[u8] = b"the host's public certificate, DER";
