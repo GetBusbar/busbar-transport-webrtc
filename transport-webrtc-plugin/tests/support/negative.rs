@@ -274,7 +274,7 @@ fn the_declared_needs_are_the_statements() {
     let read = rendering::read(&r.statement).unwrap();
     assert!(read.needs.is_empty());
     let declares: serde_json::Value =
-        serde_json::from_str(include_str!("../../transport-webrtc/declares.json")).unwrap();
+        serde_json::from_str(include_str!("../../../transport-webrtc/declares.json")).unwrap();
     assert!(
         declares.get("needs").is_none() || declares["needs"].as_array().is_some_and(Vec::is_empty)
     );

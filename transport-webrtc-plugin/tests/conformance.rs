@@ -15,7 +15,7 @@ use busbar_plugin_loader::dispatch::{
 use std::sync::atomic::Ordering;
 #[path = "support/abi.rs"]
 pub mod abi;
-#[path = "negative.rs.inc"]
+#[path = "support/negative.rs"]
 mod negative;
 fn row() -> LinkedRow {
     LinkedRow::of(busbar_transport_webrtc::linked::door).expect("actual WebRTC statement")
