@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `webrtc` framer, driven through its own table the way the host drives it: the ops it does
-//! not serve refused in the role-stub words, its settings, an unknown lease, an op with no open
-//! instance, and the op facts its tail states (sibling alignment D16: the kind's door tests, in the
-//! logic crate's `tests/door.rs`). (An integration test, so the crate itself stays
-//! `#![forbid(unsafe_code)]`: driving a raw table is the host's side, and needs it.) The framer's
-//! datagram behaviour is driven through the one loader by the plugin crate's `tests/door_ops.rs`
-//! and `tests/datagram_witness.rs`, and by busbar's suite (`tests/conformance.rs` there).
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -249,14 +243,14 @@ fn an_op_with_no_open_instance_fails_naming_the_op() {
         assert_eq!(r.0, Outcome::Failed, "{op}");
         assert_eq!(r.1, format!("{op}: no open instance"), "{op}");
     }
-    // `ingest` reads its lane before the instance (this `in` lends none): it fails, naming itself.
+
     let r = op!(none, ingest, slot::INGEST, IngestIn, FramerOut);
     assert_eq!(r.0, Outcome::Failed);
     assert!(r.1.starts_with("ingest: "), "{}", r.1);
 }
 
 /// The tail states exactly the ops the door serves (ruling R1: a framer states its ops): `begin`
-/// accepted and dialled; never detach or adopt.
+
 #[test]
 fn the_tails_op_facts_are_the_ops_the_door_serves() {
     assert_eq!(tail().facts, FACT_ACCEPTS | FACT_DIALS);

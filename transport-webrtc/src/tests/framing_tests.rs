@@ -2,10 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Two framings, a dialling one and an accepting one, over a simulated host: the host assigns path
-//! numbers, binds what a framing asks for (these tests judge the FRAMER's guards; the host's own
-//! round-trip proof is the connector's, `busbar-core-connector/src/dtls/tests.rs`), stands in for
-//! the secure layer (secured routes arrive as the far side's secured lane) and presents one keying
-//! material to both ends once it marks them verified.
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
@@ -263,7 +259,6 @@ fn an_authenticated_srtcp_replay_does_not_reapply_sender_report_state() {
                 "latest authenticated report reapplied"
             );
 
-            // A new report still reaches the actual dependency's report handler.
             now += Duration::from_secs(6);
             from.f.emit(MEDIA_BASE, OPUS, false, now).unwrap();
             from.f.timeout(now);
@@ -364,7 +359,7 @@ fn an_offer_and_an_answer_settle_terms_and_a_session_carries_messages_and_media_
         [b"{\"type\":\"hello\"}".to_vec()]
     );
     assert_eq!(heard(&dial, 1), [b"{\"type\":\"world\"}".to_vec()]);
-    // Opus passes through, byte for byte.
+
     let media = accept
         .pieces
         .iter()
@@ -393,7 +388,7 @@ fn a_keying_material_item_under_aes_cm_fails_the_framing() {
         !e.f.holds_keying(),
         "nothing of the refused material is held"
     );
-    // Any profile outside the two GCM ones is refused the same way.
+
     assert!(e.f.host(0, true, Some((0x0002, &material)), now).is_err());
 }
 
@@ -419,8 +414,7 @@ fn application_data_before_peer_verification_is_dropped_unread() {
     dial.f.rendezvous(&answer, now).expect("accepted");
     let _ = (accept.terms(), dial.terms());
     run(&mut dial, &mut accept, &mut now, 3000);
-    // The far end's host has NOT verified: a secured datagram (an SCTP packet, say) and protected
-    // media from the bound path reach the framer, and nothing is read or handed up.
+
     let path = accept.bound;
     assert_ne!(path, 0);
     let from = accept.by_id[&path];
@@ -447,7 +441,7 @@ fn application_data_before_peer_verification_is_dropped_unread() {
         "no application data before verification: {:?}",
         accept.pieces
     );
-    // And this end sends nothing secured or protected either.
+
     run(&mut dial, &mut accept, &mut now, 500);
     assert!(
         accept
@@ -484,8 +478,6 @@ fn a_spoofed_migration_never_moves_media_off_the_bound_path() {
     let spoof: SocketAddr = "192.0.2.66:5555".parse().expect("an address");
     let spoof_path = accept.path(spoof);
 
-    // A check with a forged MESSAGE-INTEGRITY from a new path: the ICE agent refuses it, no path
-    // request is made.
     let mut forged = last_nomination(&dial);
     let n = forged.len();
     forged[n - 9] ^= 0xFF;
@@ -499,8 +491,6 @@ fn a_spoofed_migration_never_moves_media_off_the_bound_path() {
         accept.requests
     );
 
-    // A REPLAYED nomination (its integrity intact, its source spoofed) is only a request: media
-    // stays on the bound path until the host proves the new one by its own round trip.
     let replayed = last_nomination(&dial);
     accept
         .f
@@ -537,7 +527,7 @@ fn a_spoofed_migration_never_moves_media_off_the_bound_path() {
         media_routes.iter().all(|r| r.path == bound),
         "every media datagram went to the bound path, none to the spoofed one"
     );
-    // Protected media arriving from the unproven path is not read.
+
     let before = accept.pieces.len();
     accept.f.datagram(
         spoof_path,
@@ -563,13 +553,12 @@ fn the_keying_material_is_handed_on_and_not_held() {
 
 #[test]
 fn opus_frame_lengths_come_from_the_toc_byte() {
-    // CELT 20 ms, one frame.
     assert_eq!(opus_samples(&[0xF8]), 960);
-    // SILK 10 ms (config 0), two frames (code 1).
+
     assert_eq!(opus_samples(&[0x01]), 960);
-    // Hybrid 20 ms (config 13), one frame.
+
     assert_eq!(opus_samples(&[13 << 3]), 960);
-    // CELT 2.5 ms (config 16), code 3 with 6 frames.
+
     assert_eq!(opus_samples(&[(16 << 3) | 3, 6]), 720);
     assert_eq!(opus_samples(&[]), 0);
 }
@@ -584,8 +573,7 @@ fn a_dialling_framing_with_nothing_to_offer_is_refused() {
 }
 
 /// A CHANNEL DELIVERS IN ORDER (an ordered data channel; the contract's stream is a sequence of
-/// frames). A message the media stack has no room for is held, and a smaller one written after it
-/// never overtakes it: it queues behind.
+
 #[test]
 fn a_held_message_is_never_overtaken() {
     let (mut dial, mut accept, mut now) = connected();
@@ -595,9 +583,7 @@ fn a_held_message_is_never_overtaken() {
         .find(|p| p.fields && p.bytes.starts_with(b"label: "))
         .map(|p| (p.stream, p.bytes.clone()))
         .expect("the accepting end opened the channel");
-    // The first two fill most of the stack's send buffer, the third does not fit beside them and
-    // is held, the fourth would fit. Each is its own content, so a swap of any two shows
-    // (codeaudit tests framing_tests.rs:469).
+
     let sent = [
         vec![1_u8; 60_000],
         vec![2_u8; 59_999],
@@ -622,13 +608,12 @@ fn a_held_message_is_never_overtaken() {
 }
 
 /// A FAILED STREAM FAILS ALONE (the transport contract: "A failed stream fails alone: its siblings
-/// on the connection carry on"). A host that keeps emitting on a channel past what the framer
-/// holds for it costs that channel, never the association.
+
 #[test]
 fn one_channels_overflow_never_fails_the_association() {
     let now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
-    // The channel is not open yet: every message is held, up to the cap and never past it.
+
     for n in 0..(MAX_HELD + 50) {
         if let Err(e) = dial.f.emit(1, &[n as u8; 8], false, now) {
             panic!("one channel's overflow failed the whole association: {e}");
@@ -636,7 +621,7 @@ fn one_channels_overflow_never_fails_the_association() {
         assert!(dial.f.held(1).len() <= MAX_HELD, "held past the cap");
     }
     assert_eq!(dial.f.failure(), None, "the association carries on");
-    // What it costs is that channel (codeaudit tests framing_tests.rs:485): failed, once, in words.
+
     assert!(dial.f.stream_failed(1), "the channel that overflowed fails");
     dial.collect();
     let failed: Vec<&Piece> = dial
@@ -652,7 +637,7 @@ fn one_channels_overflow_never_fails_the_association() {
 }
 
 /// THE RENDEZVOUS TERMS ARE BOUNDED: a far end's description that advertises any number of
-/// candidates yields terms of a bounded size, so they always fit a host's frame buffer whole.
+
 #[test]
 fn a_far_ends_candidates_are_read_up_to_a_bound() {
     let mut d = String::from(
@@ -670,7 +655,7 @@ fn a_far_ends_candidates_are_read_up_to_a_bound() {
         ));
     }
     let (_, _, _, candidates) = read_remote(&d).expect("terms");
-    // Exactly the bound (codeaudit tests framing_tests.rs:509): raising it shows.
+
     assert_eq!(
         candidates.len(),
         MAX_CANDIDATES,
@@ -680,11 +665,7 @@ fn a_far_ends_candidates_are_read_up_to_a_bound() {
 }
 
 /// ICE'S "DISCONNECTED" IS RECOVERABLE (Q128 transport-webrtc LOW, reader r171 on 78941e3; RFC
-/// 8445 and the media stack's own state: a disconnected agent may come back as it checks pairs
-/// again): the association holds through it, comes back on its own when the path returns, and
-/// ends only when the path stays gone past [`ICE_FAILED_AFTER`]. RED before the fix: the first
-/// "disconnected" ended the association, so a network switch slower than the pair timeout ended
-/// the call.
+
 #[test]
 fn an_ice_disconnect_holds_the_association_until_it_fails() {
     let now = Instant::now();
@@ -717,9 +698,7 @@ fn an_ice_disconnect_holds_the_association_until_it_fails() {
 }
 
 /// AN ACKNOWLEDGED MESSAGE IS NEVER DROPPED SILENTLY (Q128 transport-webrtc LOW, reader r171 on
-/// 78941e3): a data channel's message the reliable channel has already acknowledged, arriving
-/// while the framer's piece queue is at its cap, fails its stream loudly (its failure piece), so
-/// the layer above knows the stream lost data. RED before the fix: the message vanished.
+
 #[test]
 fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     let (mut dial, _accept, _now) = connected();
@@ -752,9 +731,7 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
 }
 
 /// A FIELD VALUE NEVER HOLDS CR OR LF (the transport contract's field block; codeaudit W1): a far
-/// end's data channel label is any UTF-8 (RFC 8832 §5.1), so one with a line break would forge
-/// field lines in the stream's head. That channel is refused: its stream fails, in words, and no
-/// field block carries the label. RED before the fix: the head held `x\r\n:status: 200`.
+
 #[test]
 fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
     let now = Instant::now();
@@ -785,11 +762,7 @@ fn a_channel_label_with_a_line_break_fails_its_stream_and_forges_no_field() {
 }
 
 /// AN EMPTY MESSAGE IS NEVER DROPPED SILENTLY, AND NEVER WEDGES ITS CHANNEL (codeaudit W3). The
-/// media stack cannot send one: its SCTP writes no chunk for an empty message yet spends the
-/// ordered stream's next sequence number, so every later message on that channel waits forever
-/// for the one never sent (measured: after an empty write, "after" never arrived). The channel
-/// cannot carry the message, so its stream fails, alone, in words, and the association carries on.
-/// RED before the fix: the write was taken, nothing was said, and the channel was stuck.
+
 #[test]
 fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
     let (mut dial, mut accept, mut now) = connected();
@@ -810,10 +783,7 @@ fn an_empty_message_fails_its_channel_in_words_rather_than_wedge_it() {
 }
 
 /// A CHANNEL THE FAR END CLOSED TAKES NO MORE MESSAGES (codeaudit W6): its stream ended with its
-/// END piece, so a later emit there (racing the close) is dropped as for a failed stream, never
-/// held forever and never failing the association, and nothing of the stream (no failure piece)
-/// follows its end. A stream never carried is still refused. RED before the fix: the message was
-/// taken and held unsent, and the held queue's cap later failed the ended stream.
+
 #[test]
 fn a_channel_the_far_end_closed_takes_no_more_messages() {
     let now = Instant::now();
@@ -835,8 +805,7 @@ fn a_channel_the_far_end_closed_takes_no_more_messages() {
 }
 
 /// A CLOSED CHANNEL AND A RE-POINTED PATH LEAVE NOTHING BEHIND (codeaudit W12): a far end that
-/// opens and closes channels, or roams across addresses, grows no bookkeeping for the life of the
-/// association. RED before the fix: every closed stream's entries and every stale address stayed.
+
 #[test]
 fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
     let now = Instant::now();
@@ -847,7 +816,7 @@ fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &two, now);
     let ids: Vec<(str0m::channel::ChannelId, u64)> =
         dial.f.channels.iter().map(|(i, s)| (*i, *s)).collect();
-    // One stream fails before its channel closes; the other just closes.
+
     dial.f.fail_stream(ids[0].1, "refused");
     for (id, _) in &ids {
         dial.f.event(Event::ChannelClose(*id));
@@ -879,11 +848,7 @@ fn a_closed_channel_and_a_repointed_path_leave_no_bookkeeping() {
 }
 
 /// A FORGED BINDING SUCCESS NOMINATES NOTHING (codeaudit W8; RFC 8489 §14.5, RFC 8445 §7.2.5.2:
-/// a response counts only if its MESSAGE-INTEGRITY verifies). An on-path observer who saw a
-/// nominating check's transaction id answers it from a new path with no valid integrity: the
-/// dialling end asks for no path. (`connected()` proves a genuine answer still nominates: the
-/// dialling end's bound path is its own nomination.) RED before the fix: the transaction id alone
-/// counted, and the forged answer asked to move the association.
+
 #[test]
 fn a_forged_binding_success_nominates_nothing() {
     let (mut dial, _accept, now) = connected();
@@ -917,9 +882,7 @@ fn stun_message(kind: u16, len: u16, attrs: &[u8]) -> Vec<u8> {
 }
 
 /// ONLY A WELL-FRAMED STUN MESSAGE IS READ AS A CHECK (codeaudit stun.rs:35; RFC 8489 §5: the
-/// length is a multiple of 4 and the datagram's size less the header; RFC 8445 §16.1:
-/// USE-CANDIDATE has no value): junk the ICE agent rejects never reaches the nomination
-/// bookkeeping. RED before the fix: each of these was read as a nominating request.
+
 #[test]
 fn only_a_well_framed_check_is_read() {
     let use_candidate = [0x00, 0x25, 0, 0];
@@ -931,13 +894,13 @@ fn only_a_well_framed_check_is_read() {
         }),
         "a well-framed nominating request is read"
     );
-    // A length that is no multiple of 4.
+
     assert_eq!(stun::read(&stun_message(1, 1, &use_candidate[..1])), None);
-    // Bytes past the length the header states.
+
     let mut trailing = stun_message(1, 4, &use_candidate);
     trailing.extend_from_slice(&[0, 0, 0, 0]);
     assert_eq!(stun::read(&trailing), None);
-    // A USE-CANDIDATE that carries a value nominates nothing.
+
     let valued = [0x00, 0x25, 0, 4, 1, 2, 3, 4];
     assert_eq!(
         stun::read(&stun_message(1, 8, &valued)),
@@ -949,8 +912,7 @@ fn only_a_well_framed_check_is_read() {
 }
 
 /// A FINGERPRINT IS TWO HEX DIGITS PER OCTET (codeaudit framing.rs:246; RFC 4572 §5): a token of
-/// one digit or with a sign is a malformed fingerprint, refused at the rendezvous. RED before the
-/// fix: `+F` and `1` were read as octets.
+
 #[test]
 fn a_fingerprint_octet_is_exactly_two_hex_digits() {
     let with = |octets: &str| {
@@ -972,9 +934,7 @@ fn a_fingerprint_octet_is_exactly_two_hex_digits() {
 }
 
 /// THE ONE CANDIDATE ADVERTISED IS ONE THE MEDIA STACK TAKES (codeaudit framing.rs:463/483): a
-/// host port's address the stack refuses as a host candidate (unspecified, multicast) refuses the
-/// framing in words, rather than be advertised while the stack's ICE agent holds no candidate.
-/// RED before the fix: the framing began and its description advertised `0.0.0.0`.
+
 #[test]
 fn a_host_port_address_the_stack_refuses_refuses_the_framing() {
     for addr in ["0.0.0.0:3478", "[::]:3478", "224.0.0.1:3478"] {
@@ -1007,10 +967,7 @@ fn stream_headed(e: &End, with: &[u8]) -> u64 {
 }
 
 /// VALID APPLICATION DATA IS NOT READ BEFORE VERIFICATION (codeaudit tests framing_tests.rs:288):
-/// a real SCTP packet and a real protected media frame of this association, arriving while the
-/// host has not verified the far end, are dropped unread; the same datagrams once it has are read.
-/// A gate that let them through would have the stack take them then, so their second arrival is a
-/// duplicate (SCTP) or a replay (SRTP) it never hands up: the red arm below fails.
+
 #[test]
 fn valid_application_data_is_not_read_before_verification() {
     let (mut dial, mut accept, now) = connected();
@@ -1023,7 +980,7 @@ fn valid_application_data_is_not_read_before_verification() {
         .emit(1, b"before verification", true, now)
         .expect("taken");
     dial.f.emit(MEDIA_BASE, OPUS, false, now).expect("a frame");
-    // The stack paces media: the frame goes out on its next tick.
+
     let now = now + Duration::from_millis(20);
     dial.f.timeout(now);
     let datagrams = owed(&mut dial);
@@ -1043,7 +1000,7 @@ fn valid_application_data_is_not_read_before_verification() {
         before,
         "nothing read before verification"
     );
-    // The red arm: verified, the very same datagrams are read.
+
     accept.f.verified = true;
     for r in &datagrams {
         accept.f.datagram(path, dial.addr, r.lane, &r.bytes, now);
@@ -1057,9 +1014,7 @@ fn valid_application_data_is_not_read_before_verification() {
 }
 
 /// A REPLAYED MEDIA FRAME FROM AN UNPROVEN PATH IS NOT READ (codeaudit tests
-/// framing_tests.rs:403): a genuine protected frame of this association, arriving from a path the
-/// host has not bound, is dropped; the same frame from the bound path is read (the red arm: a
-/// frame read from the spoofed path first would be a replay there, never handed up).
+
 #[test]
 fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
     let (mut dial, mut accept, now) = connected();
@@ -1101,10 +1056,7 @@ fn a_genuine_media_frame_from_an_unbound_path_is_not_read() {
 }
 
 /// THE FRAMER'S LINE TO ITS SHIM IS ITS OWN (codeaudit tests framing.rs:646): a far end's
-/// datagram in the relay range (keying, "connected", opened plaintext) from the bound path of a
-/// verified, keyed association is never fed. Fed, a forged keying frame would re-key the
-/// association's media under the far end's choice, and the genuine media after it would no
-/// longer be read.
+
 #[test]
 fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
     let (mut dial, mut accept, mut now) = connected();
@@ -1128,9 +1080,7 @@ fn a_far_ends_datagram_in_the_relay_range_is_never_fed() {
 }
 
 /// "DISCONNECTED" THAT COMES BACK STARTS THE WINDOW AFRESH (codeaudit tests framing.rs:1057): a
-/// path that disconnects, comes back, and disconnects again is judged from the second outage. The
-/// clock is stamped first, so the window really starts. RED for a framing that forgot the return:
-/// it would end 5 s into the second outage.
+
 #[test]
 fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
     let t0 = Instant::now();
@@ -1158,12 +1108,11 @@ fn a_disconnect_after_a_return_is_timed_from_the_second_outage() {
 }
 
 /// BACK-PRESSURE IS A PROTOCOL (codeaudit tests framing.rs:977): a channel whose held messages
-/// reach the high-water mark is FULL; drained to the low-water mark it is writable again, with its
-/// writable piece, once.
+
 #[test]
 fn a_full_channel_is_writable_again_once_drained() {
     let (mut dial, mut accept, mut now) = connected();
-    // Two fill the stack's buffer; the rest are held behind them.
+
     for m in [vec![1_u8; 60_000], vec![2_u8; 60_000]] {
         dial.f.emit(1, &m, false, now).expect("taken");
     }
@@ -1185,7 +1134,7 @@ fn a_full_channel_is_writable_again_once_drained() {
 }
 
 /// A CLOSED DATA CHANNEL ENDS ITS STREAM (codeaudit tests framing.rs:1106): one end closes the
-/// channel; the far end's stream ends with exactly one END piece, its last.
+
 #[test]
 fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
     let (mut dial, mut accept, mut now) = connected();
@@ -1206,8 +1155,7 @@ fn a_channel_closed_by_one_end_ends_the_far_ends_stream() {
 }
 
 /// THE NAMED CAPS HOLD (codeaudit tests framing.rs:991): the route queue never grows past
-/// `MAX_QUEUED`, the nominating set never past `MAX_NOMINATING`, and a message one byte past
-/// `MAX_MESSAGE` fails its channel in words while one at it is sent.
+
 #[test]
 fn the_route_nominating_and_message_caps_hold() {
     let now = Instant::now();
@@ -1248,8 +1196,7 @@ fn the_route_nominating_and_message_caps_hold() {
 }
 
 /// THIS END'S DESCRIPTION STATES ITS CERTIFICATE'S OWN FINGERPRINT (codeaudit tests
-/// crypto.rs:357): the SHA-256 of the host's certificate, which a browser checks the handshake
-/// against.
+
 #[test]
 fn the_description_states_the_certificates_sha_256() {
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), Instant::now());
@@ -1266,7 +1213,7 @@ fn the_description_states_the_certificates_sha_256() {
 }
 
 /// AN ASSOCIATION KEYED UNDER AEAD-AES-256-GCM CARRIES MEDIA AND MESSAGES (codeaudit tests
-/// crypto.rs:70: every end-to-end run used the 128-bit profile).
+
 #[test]
 fn an_association_keyed_under_aes_256_gcm_carries_both_ways() {
     let (mut dial, mut accept, mut now) = connected_under(PROFILE_AEAD_AES_256_GCM, 88);

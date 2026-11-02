@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! GNU/Linux integration-test executable hooks below the provider's default allocator.
-//! No OPENSSL allocator callback or private allocation-header layout is used.
-//!
-//! During capture, malloc fills its entire requested span with a nonzero sentinel before
-//! returning it. This initializes alignment/padding bytes without knowing any native layout.
-//! Nothing writes the allocation in the observer or deallocator: the real provider must clear
-//! that whole span before its actual downstream free. A key-only wipe control retains the
-//! sentinel outside its key, so it cannot masquerade as whole-allocation cleansing.
-//!
-//! In aws-lc-sys 0.47.0, crypto/fipsmodule/cipher/cipher.c initializes the context with
-//! OPENSSL_zalloc and allocates cipher_data with OPENSSL_malloc. The selected AES-GCM path in
-//! e_aes.c writes fields, expands the initialized input key, zeroes GCM128_CONTEXT, and copies
-//! only initialized IV/tag/input bytes. It never calls EVP_CIPHER_CTX_copy/EVP_CTRL_COPY, which
-//! would need a separate initialization argument. The fixed 12-byte IV uses the context's own
-//! initialized IV array. Its unused alignment bytes retain the malloc sentinel until cleanup.
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -41,7 +27,6 @@ enum Kind {
 
 #[derive(Clone, Copy, Default)]
 struct Allocation {
-    // Retain the allocator's actual raw pointer, never reconstruct one from its address.
     base: *mut u8,
     size: usize,
     live: bool,
@@ -222,8 +207,7 @@ fn before_free(ptr: *mut c_void, size: Option<usize>) {
                     && allocation.base.addr() == ptr.addr()
                     && allocation.size == watched.allocation.size
             });
-            // Never read a stale/reused allocation or trust the sized-free hint as bounds.
-            // A mismatch is a failed witness, checked after forwarding to glibc.
+
             let observed = if live && watched.frees == 0 {
                 // SAFETY: this is the current deallocation pointer before native free.
                 // Matching live capture establishes its requested, initialized span.
@@ -405,9 +389,7 @@ fn register(pointer: usize, kind: Kind) {
             .watched
             .iter()
             .any(|entry| entry.kind != Kind::Unused && entry.allocation.base == allocation.base));
-        // Match the numeric SDK owner address while walking the actual saved allocator
-        // pointer. No numeric address is ever converted to a pointer. Inspect from the real
-        // owner onward, so allocator metadata cannot satisfy the live-state/key controls.
+
         let (owner, len) = (0..allocation.size)
             .find_map(|offset| {
                 // SAFETY: offset remains strictly inside this live initialized allocation.

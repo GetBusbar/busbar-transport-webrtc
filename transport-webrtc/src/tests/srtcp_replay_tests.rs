@@ -58,7 +58,6 @@ impl Packet {
     }
 
     fn open(&self, receiver: &mut Gcm) -> Result<usize, CryptoError> {
-        // These are the two exact AAD layouts in pinned str0m's unprotect_rtcp.
         let tail = if self.encrypted {
             &[][..]
         } else {
@@ -197,7 +196,6 @@ fn rtp_with_a_twelve_byte_header_does_not_enter_the_srtcp_window() {
     let mut receiver = receiver(&AES_128_GCM);
     let packet = Packet::new(&AES_128_GCM, 7, 0, true);
     for _ in 0..2 {
-        // RTP has one AAD slice, even when its header is exactly 12 bytes.
         assert!(receiver
             .open(&packet.iv, &[&packet.aad], &packet.sealed, &mut [0; 20])
             .is_ok());

@@ -2,22 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The real provider creates and uses AES-128/256-GCM ciphers, then drops their owned state.
-//!
-//! On GNU/Linux, native malloc capture identifies the allocations containing the SDK's owned
-//! context and cipher_data pointers. The malloc hook initializes each entire requested span
-//! with a nonzero sentinel before the native constructor runs. Live reads through the retained
-//! allocator pointer require a full key in cipher_data and real nonzero context state beyond
-//! that sentinel. Reads through the current free/sdallocx pointer require every requested byte
-//! zero before glibc releases it. The provider's default OPENSSL allocator and cleansing remain
-//! untouched; the observer never writes provider state or relies on private allocator headers.
-//! Native free/sdallocx
-//! and Rust Vec positive/negative controls exercise both witnesses. Other platforms retain cipher
-//! behavior and Rust Box free receipts under behavior-only names.
-//!
-//! This covers the actual owned provider allocations on the selected backend/CPU; it is not
-//! proof of wiping every stack copy, register or other upstream secret. No Rust byte reference
-//! is formed over opaque provider state. Rust Vec controls register only their initialized
-//! slice and read it through the actual System.dealloc pointer, without scanning spare capacity.
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "support/provider_alloc.rs"]
@@ -118,8 +102,6 @@ fn register(ptr: usize, size: usize, len: usize, id: u8, key_len: usize) {
     REGISTERED[probe.id].fetch_add(1, Ordering::SeqCst);
 }
 
-// The controls pass the real Vec's full initialized slice, never a capacity-sized range or
-// an interior subslice. The borrow ends before drop; only address/length metadata is retained.
 fn register_payload(bytes: &[u8], capacity: usize, id: u8, key_len: usize) {
     let probe = Probe {
         ptr: bytes.as_ptr().addr(),
@@ -264,7 +246,7 @@ fn an_aes_256_gcm_session_key_is_zeroised_when_its_cipher_drops() {
     );
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     let mut open = SupportedAeadAes256Gcm::create_cipher(gcm, key::<32>(2), false);
-    // A forged packet: the real cipher is used, and refuses it.
+
     let mut out = [0_u8; PAYLOAD.len() + 16];
     assert!(AeadAes256GcmCipher::decrypt(
         &mut *open,

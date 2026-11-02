@@ -101,7 +101,7 @@ fn twelve_byte_rtp_headers_do_not_consume_the_srtcp_sender_index() {
                 let mut header = aad(7, 0x7fff_ffff);
                 header[1] = payload_type | marker;
                 let mut output = [0; 36];
-                // The bytes that are an index in SRTCP are an RTP SSRC here.
+
                 cipher
                     .seal(
                         &nonce(7, u32::from(payload_type) + u32::from(marker)),
@@ -194,9 +194,7 @@ pub(super) fn before_seal(cipher: &mut Gcm, iv: &[u8; 12], header: &[u8], input:
     if !prime {
         return;
     }
-    // Accelerate only the provider's key-epoch state between two genuine upstream
-    // transmissions. This synthetic MAX seal is discarded, never substituted onto the
-    // wire. The next actual upstream report must fail through its real .expect path.
+
     let index = u32::from_be_bytes(header[8..12].try_into().unwrap()) & 0x7fff_ffff;
     let mut terminal_header = [0; 12];
     terminal_header.copy_from_slice(header);

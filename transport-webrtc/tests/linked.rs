@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `linked` entry the composition root folds, tied to what the door's Statement declares
-//! (sibling alignment D14): its key, layers and session are the Statement's own facts.
 
 use busbar_contract::abi::transport::{TransportTail, UNIT0_FIRST_DATAGRAM};
 use busbar_transport_webrtc::{door, linked};

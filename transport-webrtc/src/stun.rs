@@ -2,11 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The few facts of a connectivity check the framer reads itself (RFC 8489 framing, RFC 8445
-//! attributes): its class, its transaction id and whether it nominates. Integrity is the media
-//! stack's ICE agent's to judge (it answers only a check whose MESSAGE-INTEGRITY verifies), and the
-//! host's, independently. The one verdict judged here is the dialling end's: whether a Binding
-//! success it acts on carries a MESSAGE-INTEGRITY that verifies ([`integrity_holds`]), since the
-//! stack's own verdict on a response is not observable.
 
 /// The STUN magic cookie.
 const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
@@ -19,21 +14,20 @@ const USE_CANDIDATE: u16 = 0x0025;
 /// MESSAGE-INTEGRITY (RFC 8489 §14.5): an HMAC-SHA1, 20 bytes.
 const MESSAGE_INTEGRITY: u16 = 0x0008;
 
-// RFC 8489 §5: fixed header, 96-bit transaction id and reserved high type bits.
 const HEADER_LEN: usize = 20;
 const TRANSACTION_ID_LEN: usize = 12;
 const MESSAGE_LENGTH_FIELD: std::ops::Range<usize> = 2..4;
 const COOKIE_FIELD: std::ops::Range<usize> = 4..8;
 const TRANSACTION_ID_FIELD: std::ops::Range<usize> = 8..HEADER_LEN;
 const RESERVED_TYPE_BITS: u8 = 0xC0;
-// RFC 8489 §14: each attribute has a four-byte header and 32-bit alignment.
+
 const ATTRIBUTE_HEADER_LEN: usize = 4;
 const ATTRIBUTE_ALIGNMENT: usize = 4;
 const ATTRIBUTE_PADDING_MASK: usize = ATTRIBUTE_ALIGNMENT - 1;
-// RFC 8489 §14.5: MESSAGE-INTEGRITY carries the 160-bit HMAC-SHA1 result.
+
 const INTEGRITY_VALUE_LEN: usize = 20;
 const INTEGRITY_ATTRIBUTE_LEN: usize = ATTRIBUTE_HEADER_LEN + INTEGRITY_VALUE_LEN;
-// RFC 7983 §5: STUN occupies this first-byte range in the multiplexed datagram.
+
 const STUN_FIRST_BYTE_MIN: u8 = 0;
 const STUN_FIRST_BYTE_MAX: u8 = 3;
 
@@ -55,8 +49,7 @@ pub enum Check {
 }
 
 /// Read `datagram` as a Binding request or success response; `None` for anything else, a message
-/// RFC 8489 §5 does not frame among it (a length that is no multiple of 4, or not the datagram's
-/// size less the header).
+
 #[must_use]
 pub fn read(datagram: &[u8]) -> Option<Check> {
     let head = datagram.get(..HEADER_LEN)?;
@@ -74,7 +67,7 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
     match kind {
         BINDING_REQUEST => Some(Check::Request {
             txid,
-            // USE-CANDIDATE has no value (RFC 8445 §16.1): one that carries one nominates nothing.
+
             nominates: attributes(body).any(|a| a == (USE_CANDIDATE, 0)),
         }),
         BINDING_SUCCESS => Some(Check::Success { txid }),
@@ -83,7 +76,7 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
 }
 
 /// The attributes of a STUN body, `(type, value length)` each, in order, stopping at the first
-/// malformed one.
+
 fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
     let mut at = 0_usize;
     std::iter::from_fn(move || {
@@ -100,8 +93,7 @@ fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
 }
 
 /// Whether `datagram`'s MESSAGE-INTEGRITY verifies under the short-term credential `key` (RFC 8489
-/// §14.5: HMAC-SHA1 over the message up to the attribute, its header's length counting through
-/// it). `false` for a message without one.
+
 #[must_use]
 pub fn integrity_holds(datagram: &[u8], key: &[u8]) -> bool {
     let Some(head) = datagram.get(..HEADER_LEN) else {

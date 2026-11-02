@@ -2,21 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **ONE FRAMER, BOTH DOORS, ONE TABLE** — the `webrtc` framer compiled in (`linked::door`, the
-//! `linked` row) and dropped in (this crate's `cdylib`, exporting the same door as `busbar_plugin_door`),
-//! each admitted by the ONE loader against the same Statement rendering and bound to a dispatcher
-//! of its own (Part 2 #2: a plugin is a plugin; THE DESIGN §11.4: compiled in or dropped in, the
-//! same table). The pattern is `plugin-loader`'s export both-ways proof
-//! (`src/tests/export_conformance_tests.rs`): one script, two doors, equal transcripts.
-//!
-//! The published suite's transport script drives a STREAM framer (its `begin` carries no lane, its
-//! `emit` becomes wire bytes); a DATAGRAM framer's every call reads its lane, so the script here is
-//! the datagram one: the Statement's tail, the lifecycle, the carrier ops it does not play, the
-//! framer ops it refuses, a `begin` without a lane refused, a dialled `begin` over a lane answering
-//! its session description, a rendezvous that is no description failing the framing, an accepted
-//! framing finished, and the instance closed.
-//!
-//! THE RED ARM, kept: the dropped-in library admitted against a Statement rendering that is not its
-//! own is refused, so the equality the witness asserts is between two admitted doors.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field};
 use busbar_contract::abi::transport::{
@@ -103,7 +88,7 @@ impl Host {
     }
 
     /// What the last answer yielded, as one deterministic line: the pieces (stream, flags, and for
-    /// the description the facts a host reads of it), never the random credentials.
+
     fn yielded(&self, o: &FramerOut) -> String {
         let n = (o.yielded.pieces_len as usize).min(self.pieces.len());
         let pieces: Vec<String> = self.pieces[..n]
@@ -158,7 +143,7 @@ fn begin(p: &Plugin<Transport>, side: u32, lane: bool) -> (String, u64) {
     let l = host.lane(0);
     let mut i: BeginIn = conf::input();
     i.side = side;
-    // A datagram lane rides the connector's DTLS, as the host's datagram `begin` states it.
+
     i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
     i.facts = &facts;
     i.sink = host.sink();
@@ -194,7 +179,6 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
     ));
     t.push(format!("open {}", conf::called(&conf::open(&p, &settings))));
 
-    // The role it does not play, and the framer ops it has no use for.
     t.push(format!(
         "listen {}",
         go::<ListenIn, ListenOut>(&p, slot::LISTEN, conf::input()).0
@@ -211,17 +195,14 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0
     ));
 
-    // A datagram framer reads its lane.
     t.push(format!(
         "begin without a lane {}",
         begin(&p, SIDE_DIAL, false).0
     ));
 
-    // Dialled over a lane: the offer, at once, on stream 0.
     let (line, token) = begin(&p, SIDE_DIAL, true);
     t.push(format!("begin dial {line}"));
 
-    // A rendezvous that is no description fails the framing, which is then forgotten.
     let mut host = Host::new();
     let junk = b"not a session description";
     for step in ["rendezvous junk", "rendezvous after failure"] {
@@ -235,7 +216,6 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         ));
     }
 
-    // Accepted: it waits for the offer; finished, it ends, and is forgotten.
     let (line, token) = begin(&p, SIDE_ACCEPT, true);
     t.push(format!("begin accept {line}"));
     for step in ["finish", "finish again"] {
@@ -275,7 +255,7 @@ fn expected() -> Vec<String> {
 }
 
 /// THE WITNESS: the dropped-in library states exactly the linked door's Statement, and the two
-/// doors run the script to the same transcript, the one the contract requires.
+
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let s = subject();
@@ -296,7 +276,7 @@ fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
 }
 
 /// THE RED ARM: the dropped-in library admitted against a rendering that is not its own (one byte
-/// of its Statement moved) is refused; its own is admitted.
+
 #[test]
 fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {
     let s = subject();

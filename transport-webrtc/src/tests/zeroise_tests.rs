@@ -2,15 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Exact initialized payloads retained by the real shim and framing, observed immediately before
-//! their allocations are freed. Linux reads those physical ranges through `/proc/self/mem` into
-//! initialized stack storage: the allocator never forms a Rust reference to the released payload.
-//! Spare capacity, opaque structs and unrelated allocations are never read. The accepted-pair
-//! script watches the actual upstream KeyingMaterial Vec exposed by its public slice view.
-//!
-//! Linux requires complete reads and actual frees for every registration. The other platforms run
-//! the same behavior scripts and require the frees, but have no physical-byte wipe proof here;
-//! their test names explicitly say behavior-only. These observations cover registered Vec payloads,
-//! not every upstream secret or stack copy.
 
 use core::net::SocketAddr;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -79,7 +70,7 @@ fn register(bytes: &[u8], upstream: bool) {
     let Some(id) = bytes.windows(KEY_LEN).find_map(marked) else {
         return;
     };
-    // Opening may allocate; it is deliberately outside the allocator and its metadata borrow.
+
     #[cfg(target_os = "linux")]
     MEMORY.get_or_init(|| {
         File::open("/proc/self/mem").expect("Linux wipe proof needs /proc/self/mem")
@@ -108,22 +99,19 @@ fn register(bytes: &[u8], upstream: bool) {
 }
 
 /// Called after the real Vec's payload is initialized, before it is retained by the product.
-/// Each caller passes the allocation's first byte, not a subslice or the test input's copy.
+
 pub(crate) fn owned(bytes: &[u8]) {
     register(bytes, false);
 }
 
 /// KeyingMaterial::new in the pinned dependency creates a Vec whose entire initialized payload
-/// this public slice exposes. It is retained and destroyed by the actual media stack.
+
 pub(crate) fn upstream(bytes: &[u8]) {
     register(bytes, true);
 }
 
 struct Watch;
 
-// Read physical memory through the kernel, never through a Rust reference to the source range.
-// `read_exact_at` retries interrupted/short reads; a denied, missing or incomplete observation
-// cannot increment the complete-read receipt. The overlap retains markers crossing chunks.
 #[cfg(target_os = "linux")]
 fn observe(payload: &Payload) -> Option<bool> {
     let memory = MEMORY.get()?;
@@ -180,8 +168,7 @@ unsafe impl GlobalAlloc for Watch {
                 (&FREED, &FREED_UNZEROED)
             };
             freed[payload.id].fetch_add(1, Ordering::SeqCst);
-            // A mismatch or reentrant/failed read has no complete-read receipt and fails after
-            // the allocator returns. Only the originally initialized payload length is sampled.
+
             #[cfg(target_os = "linux")]
             if payload.len <= layout.size() {
                 let _ = READING.try_with(|reading| {
@@ -294,17 +281,16 @@ fn keying_material_a_framing_refuses_is_zeroised() {
         now,
     )
     .expect("begins");
-    // Refusals happen before a copy is made: neither one may retain or allocate material.
+
     assert!(f
         .host(0, false, Some((PROFILE_AEAD_AES_128_GCM, &material)), now)
         .is_err());
     assert!(!f.holds_keying());
-    // AES_CM, verified: refused the same way.
+
     assert!(f.host(0, true, Some((0x0001, &material)), now).is_err());
     assert!(!f.holds_keying());
     assert_eq!(REGISTERED[2].load(Ordering::SeqCst), 0);
-    // A verified item is queued until rendezvous. A second item is refused while the first
-    // remains held: dropping this real framing must wipe and free its queued material.
+
     f.host(0, true, Some((PROFILE_AEAD_AES_128_GCM, &material)), now)
         .expect("queued");
     assert!(f.holds_keying());
@@ -330,7 +316,7 @@ fn red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed() {
         freed_unzeroed(3) >= 1,
         "the witness must see a key freed without zeroising"
     );
-    // And a zeroising holder of the same bytes is not seen.
+
     let held = zeroize::Zeroizing::new(key(4).to_vec());
     owned(&held);
     drop(std::hint::black_box(held));
@@ -338,8 +324,6 @@ fn red_arm_a_key_in_a_plain_vec_is_seen_freed_unzeroed() {
     #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(4), 0);
 }
-
-// ── the accepted path ────────────────────────────────────────────────────────────────────────────
 
 /// A placeholder certificate: the framer states its SHA-256 and nothing else reads it.
 const CERT: &[u8] = b"public certificate bytes";
@@ -486,7 +470,7 @@ fn opening() -> Opening {
 }
 
 /// Two ends through the rendezvous, ICE, verification and keying with `material`: a connected
-/// association (the framer's own unit tests' simulated host, `src/tests/framing_tests.rs`).
+
 fn connected_with(material: &[u8]) -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
@@ -516,8 +500,7 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 }
 
 /// THE PLUGIN'S OWN COPIES on the accepted path: keying material presented to a verified
-/// association passes through the framing and its shim, and none of what the plugin holds is
-/// freed unzeroed. The upstream KeyingMaterial payload is counted apart (next test).
+
 #[cfg_attr(target_os = "linux", test)]
 fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     let material = key(5);
@@ -535,9 +518,7 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
 }
 
 /// KNOWN RESIDUAL, ASSERTED AS KNOWN (listed in the README): the published str0m 0.24.1 and
-/// dimpl 0.7.4 free the KeyingMaterial payload unzeroed. This test follows that actual payload
-/// through the accepted pair and fails when upstream starts zeroising, which is the cue to turn it
-/// into a gate and delete the README note.
+
 #[cfg_attr(target_os = "linux", test)]
 fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     let material = key(6);
@@ -555,10 +536,7 @@ fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
 }
 
 /// PLAINTEXT QUEUED FOR SEALING IS ZEROISED TOO (codeaudit W10; the shim's doc: relayed plaintext
-/// is zeroised): what the media stack hands the shim to seal is cleared before its buffer is
-/// reused, freed past the spare count, or dropped with the shim still queued. Both counts are
-/// asserted against the exact registered payloads, including buffers reused after polling.
-/// RED before the fix: the buffers were cleared by length only and freed holding the plaintext.
+
 #[cfg_attr(target_os = "linux", test)]
 fn plaintext_queued_for_sealing_is_zeroised() {
     use str0m::crypto::dtls::{DtlsInstance, DtlsOutput};
@@ -567,7 +545,7 @@ fn plaintext_queued_for_sealing_is_zeroised() {
     shim.handle_packet(&crate::shim::CONNECTED_FRAME)
         .expect("the relay is taken");
     let mut buf = vec![0_u8; 2048];
-    // More sends than the shim keeps spare buffers for, then every one polled out.
+
     for _ in 0..12 {
         shim.send_application_data(&plain)
             .expect("taken once connected");
@@ -580,7 +558,7 @@ fn plaintext_queued_for_sealing_is_zeroised() {
         }
     }
     assert_eq!(sealed, 12, "every packet handed back to seal");
-    // And one still queued when the shim drops.
+
     shim.send_application_data(&plain).expect("taken");
     buf.fill(0);
     drop(shim);
@@ -593,8 +571,6 @@ fn plaintext_queued_for_sealing_is_zeroised() {
     );
 }
 
-// No non-Linux memory observer is implemented here. Retain every real product script and the
-// registered-free checks under explicit behavior-only names instead of reporting wipe proof.
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn shim_and_refused_framing_behavior_only_without_linux_wipe_proof() {

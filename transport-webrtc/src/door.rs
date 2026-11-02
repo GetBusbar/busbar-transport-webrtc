@@ -2,28 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE `webrtc` DOOR: this transport as a DATAGRAM FRAMER on the transport kind's table
-//! (`busbar_contract::abi::transport`, its datagram lane `abi::transport::datagram`). Every slot is
-//! a [`SafeSlot`] over the SDK's generic lifecycle: no `unsafe` here.
-//!
-//! * `begin`: [`SIDE_ACCEPT`] (answers an offer) or [`SIDE_DIAL`] (yields its offer at once, on
-//!   stream 0). The host's certificate comes in [`ConnFacts::local_certificate`] (public DER; its
-//!   fingerprint is what the description states), the host port's address in the lane. A dialling
-//!   framing's opening fields name what it offers: one `channel` field per data channel (its label,
-//!   streams `1, 2, ...` in order) and `media: audio` for one Opus line (stream `MEDIA_BASE`).
-//! * `ingest`: one datagram, or the far end's description, as the lane names it; the lane's host
-//!   state (bound path, verified bit, keying-material item, new paths) is read first, on every call
-//!   that carries a lane.
-//! * `emit`: one message for a stream (a channel's message, an Opus frame for a media line),
-//!   gathered until `end_of_frame`; [`EMIT_TEXT`] marks a channel message as text. A channel whose
-//!   held messages reach the framing's high-water mark answers [`YIELD_STREAM_FULL`] and is
-//!   writable again with a [`PIECE_WRITABLE`] piece; a channel that cannot carry a message fails
-//!   alone, with a [`PIECE_STREAM_FAILED`] piece.
-//! * `timer`: the clock; `finish`: the association closes.
-//! * `locate`, `encode`, `refuse`, `detach`, `adopt` (no authority to dial, no envelope, no
-//!   hand-off) and every carrier op: REFUSED (`not_served!`).
-//!
-//! A full host buffer is back-pressure: READY with [`YIELD_MORE`], and the re-call carries no new
-//! bytes. No op pends.
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
@@ -55,8 +33,7 @@ pub use crate::meta::KEY;
 use crate::meta::TAIL;
 
 /// THE AUTH POINTS THIS DOOR OFFERS: none. An association has no head and the door makes no auth
-/// call, so the record is stated EMPTY (ruling R2): with no record the host would read
-/// `{Head, HeadBody}` and admit a guest line whose auth needs a point no association honours.
+
 const OFFERED_POINTS: [u8; 4] = 0_u32.to_le_bytes();
 
 busbar_contract::statement_extensions!(
@@ -91,8 +68,6 @@ struct Held1 {
     /// A message being gathered, per stream (whether it is text is its completing call's).
     gathering: HashMap<u64, Vec<u8>>,
     /// A piece split across calls, whether its rest continues a field line an earlier piece
-    /// began, and how many of its bytes are already written (an offset, so a large piece is
-    /// never shifted down once per answer).
     partial: Option<(Piece, bool, usize)>,
 }
 
@@ -110,7 +85,7 @@ impl Held1 {
 }
 
 /// One association behind its own lock, so one association's crypto never waits on another's:
-/// `None` once it is forgotten.
+
 type Slot = Arc<Mutex<Option<Held1>>>;
 
 /// The framings one instance holds.
@@ -159,7 +134,7 @@ impl Framings {
 }
 
 /// The association's lock. A panic that unwound while an op held it left the state torn: the
-/// association is forgotten (its slot emptied, the poison cleared), never served torn.
+
 fn hold(slot: &Mutex<Option<Held1>>) -> MutexGuard<'_, Option<Held1>> {
     hold_torn(slot).0
 }
@@ -222,9 +197,8 @@ fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
 }
 
 /// Read the lane's host state into the framing: new paths, the bound path, the verified bit and
-/// the keying-material item. (The host port's address is read once, at `begin`.)
+
 fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Result<(), String> {
-    // A path is read whole or refused: one dropped would lose its checks without a word.
     let paths = lane
         .paths()
         .iter()
@@ -247,12 +221,7 @@ fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Resu
 }
 
 /// Answer into the sink and the lane what the framing owes: routes (bytes in `wire`), pieces (bytes
-/// in `frame`), the rendezvous terms, one path request, the deadline, and the flags.
-///
-/// # Errors
-///
-/// A datagram that even an empty wire buffer, or rendezvous terms that even an empty frame buffer,
-/// could not hold whole: the framing fails rather than answer YIELD_MORE with no progress.
+
 fn answer(
     h: &mut Held1,
     sink: Lent<'_, FramerSink>,
@@ -266,13 +235,10 @@ fn answer(
     let mut d = DatagramYield::default();
     let mut more = false;
 
-    // Routes: only through a lane's buffer; a stream host gets none.
     if let Some(lane) = lane {
         let mut routes = lane.routes();
         while let Some(r) = h.f.next_route() {
             if r.bytes.len() > wire.cap() {
-                // Even an empty wire buffer could never hold it: YIELD_MORE would be a re-call
-                // loop with no progress.
                 return Err(
                     "a datagram the media stack sends does not fit the host's wire buffer".into(),
                 );
@@ -303,7 +269,6 @@ fn answer(
         }
     }
 
-    // The terms first, whole, so their spans are in this answer's frame.
     if let Some(t) = h.f.take_terms() {
         let parts: [&[u8]; 6] = [
             t.local_user.as_bytes(),
@@ -341,13 +306,11 @@ fn answer(
         } else if total > frame.cap() {
             return Err("the rendezvous terms do not fit the host's frame buffer".into());
         } else {
-            // Not room for them whole: the host drains and calls again.
             h.f.restore_terms(t);
             more = true;
         }
     }
 
-    // Pieces.
     while let Some((mut p, continued, from)) = h
         .partial
         .take()
@@ -355,7 +318,6 @@ fn answer(
     {
         let room = frame.cap().saturating_sub(frame.asked());
         if p.failed && p.bytes.len() > room && frame.asked() == 0 {
-            // A failure's reason is never split: one longer than the whole buffer is cut to it.
             p.bytes.truncate(room);
         }
         let left = p.bytes.len().saturating_sub(from);
@@ -366,8 +328,6 @@ fn answer(
         }
         let whole = left <= room;
         if !whole && (p.fields || p.failed) && frame.asked() != 0 {
-            // A field block, or a failure's reason, starts a fresh answer rather than be split
-            // (or cut) mid-buffer.
             h.partial = Some((p, continued, from));
             more = true;
             break;
@@ -387,7 +347,6 @@ fn answer(
             declared_len: 0,
         });
         if !whole {
-            // The rest of a field block continues the line this piece may have split.
             let continues = p.fields;
             h.partial = Some((p, continues, from + n));
             more = true;
@@ -418,7 +377,7 @@ fn answer(
 }
 
 /// Run `op` on the framing `token` names, then answer what it owes, with the yield flags `op`
-/// answers besides.
+
 fn with(
     inst: &Instance<'_, State>,
     t: &OpTexts,
@@ -503,11 +462,7 @@ busbar_contract::not_served! {
 }
 
 /// What a dialling framing's opening fields offer.
-///
-/// # Errors
-///
-/// A `channel` field whose label is empty or not text: skipping it would shift every later
-/// channel off the stream its field order names.
+
 fn opening(i: &Lent<'_, BeginIn>) -> Result<Opening, &'static str> {
     let mut o = Opening::default();
     for f in i.fields().iter() {
@@ -566,7 +521,7 @@ impl SafeSlot for Begin {
         let sink = i.field(|x| &x.sink);
         let now_ns = sink.now_monotonic_ns;
         let base = Instant::now();
-        // The one candidate this end advertises, and where every datagram it reads arrives.
+
         let Some(local) = addr(lane.field(|l| &l.local_addr)) else {
             return o.fail(Refusal::failed(
                 "begin: the lane names no address of the host's port",
@@ -624,8 +579,6 @@ impl SafeSlot for Ingest {
             Some(lane),
             &mut o,
             |h, now| {
-                // Bytes first (none on the YIELD_MORE re-call or a host-state-only call), then the
-                // far side's end, whichever call carries it.
                 if !bytes.is_empty() {
                     match lane.lane {
                         LANE_RENDEZVOUS => h.f.rendezvous(bytes, now)?,
@@ -680,7 +633,7 @@ impl SafeSlot for Emit {
 }
 
 /// One piece of a message for `stream` from the host (`end`: it completes the message), gathered
-/// until its last; the yield flags the call answers besides.
+
 fn emit(
     h: &mut Held1,
     stream: u64,
@@ -696,25 +649,22 @@ fn emit(
             0
         }
     };
-    // The re-call after YIELD_MORE carries nothing new.
+
     if bytes.is_empty() && !end {
         return Ok(full(h));
     }
-    // A failed or ended stream's host was told: what it still emits there (racing the far end's
-    // close, say), and what was gathered, goes.
+
     if h.f.stream_failed(stream) || h.f.stream_ended(stream) {
         h.gathering.remove(&stream);
         return Ok(full(h));
     }
-    // A stream the framing never carried is refused at a message's first piece, never gathered.
+
     if !h.f.carries(stream) {
         h.gathering.remove(&stream);
         return Err(format!("no stream {stream} on this association"));
     }
     let gathered = h.gathering.get(&stream).map_or(0, Vec::len);
     if gathered + bytes.len() > MAX_MESSAGE {
-        // A message no channel could carry: its stream fails, alone, and nothing more
-        // of it is gathered.
         h.gathering.remove(&stream);
         h.f.fail_stream(stream, "a message larger than the channel can ever send");
         return Ok(0);
@@ -726,14 +676,13 @@ fn emit(
             .extend_from_slice(bytes);
         return Ok(full(h));
     }
-    // A message in one piece is sent from the host's bytes, never gathered.
+
     match h.gathering.remove(&stream) {
-        // Text or binary is what the call that completes the message says.
         Some(mut message) => {
             message.extend_from_slice(bytes);
             h.f.emit(stream, &message, text, now)?;
         }
-        // An empty message too: the framing says what becomes of it.
+
         None => h.f.emit(stream, bytes, text, now)?,
     }
     Ok(full(h))
@@ -780,8 +729,7 @@ impl SafeSlot for Finish {
             Ok(s) => s,
             Err(r) => return o.fail(r),
         };
-        // The map's lock is let go before the association's is taken: `with` takes them the other
-        // way round.
+
         let slot = s.lock().remove(&i.framing);
         let Some(mut h) = slot.and_then(|slot| hold(&slot).take()) else {
             return o.fail(Refusal::failed(FINISH.no_framing));
@@ -790,7 +738,7 @@ impl SafeSlot for Finish {
         let now_ns = sink.now_monotonic_ns;
         let now = h.at(now_ns);
         h.f.finish(now);
-        // What the close owes is answered once; what does not fit is dropped with the framing.
+
         let _ = answer(&mut h, sink, i.lane(), now_ns, &mut o);
         let flags = o.get().yielded.flags & !(YIELD_MORE | YIELD_HAS_DEADLINE);
         o.set(|o| &o.yielded.next_deadline_ns, 0);
@@ -826,15 +774,12 @@ busbar_contract::plugin_door! {
 }
 
 /// The `PIECE_*` bits of one piece of the framing's `p`: `whole` when it carries the last of its
-/// bytes, `continued` when a split field block's earlier piece came first. A closed data
-/// channel is the stream's END: its own empty piece with [`PIECE_END`] and [`PIECE_END_OF_FRAME`]
-/// (the transport contract's "streams end by flag"); an empty piece without it is an empty message.
+
 fn piece_flags(p: &Piece, continued: bool, whole: bool) -> u16 {
     if p.end {
         return PIECE_END | PIECE_END_OF_FRAME;
     }
     if p.failed {
-        // A failed stream's last piece: its reason, whole (the door never splits it).
         return PIECE_STREAM_FAILED | PIECE_END_OF_FRAME;
     }
     if p.writable {
@@ -847,7 +792,7 @@ fn piece_flags(p: &Piece, continued: bool, whole: bool) -> u16 {
             flags |= PIECE_CONTINUED;
         }
     }
-    // Every piece of a text message, an empty one's one piece too.
+
     if p.text && !p.fields {
         flags |= PIECE_TEXT;
     }

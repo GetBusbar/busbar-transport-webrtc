@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR'S OWN DUTIES THROUGH THE TABLE: what `begin`, `ingest`, `emit` and `timer` answer into
-//! host buffers of a size the test chooses, driven through the one loader as the host drives them
-//! (the linked door; `datagram_witness.rs` holds the dropped-in one to the same transcript). The
-//! far end, where one is needed, is a framing of this crate's own, driven directly.
 
 use std::time::{Duration, Instant};
 
@@ -171,7 +168,7 @@ fn go<I: busbar_plugin_loader::dispatch::InFrame>(
     let mut f = Frame::new(i, conf::output::<FramerOut>());
     let c = p.call(s, &mut f);
     let called = conf::called(&c);
-    // `called` is "<Outcome> lease=<bool> <words>": the words are what follows the lease.
+
     let why = called
         .split_once(" lease=")
         .and_then(|(_, rest)| rest.split_once(' '))
@@ -285,9 +282,7 @@ fn begun(host: &mut Host, channels: &[&[u8]]) -> Answer {
 }
 
 /// A DIALLING FRAMING'S CHANNELS ARE STREAMS 1, 2, ... IN FIELD ORDER (the door's doc; codeaudit
-/// door.rs:482): a `channel` field the framer cannot offer (an empty label, or one that is not
-/// UTF-8) refuses the `begin` in words, rather than be skipped and shift every later channel's
-/// stream number. RED before the fix: `["", "b"]` began, `b` on stream 1.
+
 #[test]
 fn a_channel_field_it_cannot_offer_refuses_the_begin() {
     for bad in [&b""[..], &[0xff, 0xfe][..]] {
@@ -306,8 +301,7 @@ fn a_channel_field_it_cannot_offer_refuses_the_begin() {
 }
 
 /// THE HOST PORT'S ADDRESS IS READ AT BEGIN (codeaudit door.rs:529): with none, or one that does
-/// not parse, the framing could advertise no candidate and would read no datagram, so `begin` is
-/// refused in words. RED before the fix: it began, and hung until its timers.
+
 #[test]
 fn a_begin_without_the_host_ports_address_is_refused() {
     for local in [&b""[..], b"not an address"] {
@@ -326,8 +320,7 @@ fn a_begin_without_the_host_ports_address_is_refused() {
 }
 
 /// A HOST PATH IS READ WHOLE OR REFUSED (codeaudit door.rs:187): a path whose address does not
-/// parse fails the call in words, rather than be dropped and its checks lost. RED before the fix:
-/// the path was skipped and the framing began.
+
 #[test]
 fn a_host_path_whose_address_does_not_parse_is_refused() {
     let mut host = Host::new(4096, 4096);
@@ -340,12 +333,11 @@ fn a_host_path_whose_address_does_not_parse_is_refused() {
 }
 
 /// A DATAGRAM THE HOST'S WIRE BUFFER CAN NEVER HOLD FAILS THE FRAMING IN WORDS (codeaudit W4), as
-/// rendezvous terms that never fit do: answering YIELD_MORE for it would be a re-call loop with no
-/// progress. RED before the fix: every re-call answered YIELD_MORE and routed nothing, forever.
+
 #[test]
 fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
     let p = door();
-    // The wire holds 16 bytes: no connectivity check (20 bytes of header alone) ever fits.
+
     let mut host = Host::new(16, 16 * 1024);
     let a = begin(&p, &mut host, &[b"events"]);
     assert_eq!(a.outcome, Outcome::Ready);
@@ -356,7 +348,7 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
         .find(|x| x.0 == DESCRIPTION)
         .map(|x| x.2.clone())
         .expect("the offer");
-    // The far end answers; the host knows the far end's address as path 1.
+
     let now = Instant::now();
     let mut far = Framing::begin(
         Side::Accept,
@@ -382,7 +374,7 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
             last = timer(&p, &mut host, token);
         }
     }
-    // The op that answered it opens the words (sibling alignment D7).
+
     let why = "a datagram the media stack sends does not fit the host's wire buffer";
     assert_eq!(last.outcome, Outcome::Failed, "{last:?}");
     assert!(
@@ -392,21 +384,18 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
 }
 
 /// A STREAM'S FAILURE REASON IS NEVER CUT TO THE ROOM LEFT (codeaudit W5): like a field block, a
-/// failure piece that does not fit beside the pieces before it waits for a fresh answer, and only
-/// a reason longer than the whole buffer is cut. RED before the fix: it was cut to whatever room
-/// the answer had left, and the rest was lost.
+
 #[test]
 fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
     let why = b"an empty message, which the media stack cannot send".to_vec();
     let p = door();
-    // Across frame buffers of these sizes, the offer's last chunk leaves every room from 1 to the
-    // reason's length beside it in some answer.
+
     for cap in 100..=200 {
         let mut host = Host::new(4096, cap);
         let a = begin(&p, &mut host, &[b"events"]);
         assert_eq!(a.outcome, Outcome::Ready, "{a:?}");
         let token = a.framing;
-        // The empty message fails stream 1 while the offer is still being answered.
+
         let mut answers = vec![emit(&p, &mut host, token, 1, b"")];
         while answers.last().is_some_and(|a| a.flags & YIELD_MORE != 0) {
             assert!(answers.len() < 100, "no progress at frame cap {cap}");
@@ -428,9 +417,7 @@ fn a_failure_reason_waits_for_a_fresh_answer_rather_than_be_cut() {
 }
 
 /// WHAT DOES NOT FIT ONE ANSWER CONTINUES IN THE NEXT, ONCE (codeaudit tests door.rs:651): over a
-/// frame buffer of 10 bytes, the dialled offer comes in pieces that reassemble to a description
-/// the far end accepts, each piece text and only the last ending the frame; the audio line's
-/// head comes as a field block whose first piece starts a line and every later one continues it.
+
 #[test]
 fn what_does_not_fit_one_answer_continues_in_the_next() {
     let p = door();
@@ -484,9 +471,7 @@ fn finish(p: &Plugin<Transport>, host: &mut Host, token: u64) -> Answer {
 }
 
 /// ONE ASSOCIATION'S LOCK AND THE MAP'S ARE NEVER TAKEN IN OPPOSITE ORDERS (codeaudit tests
-/// door.rs:718; PL11): an op that fails (and so forgets its framing, taking the map's lock while it
-/// holds the association's) racing `finish` on the same framing (which lets the map's lock go
-/// before it takes the association's) never deadlocks. A watchdog fails the test rather than hang.
+
 #[test]
 fn a_failing_op_racing_finish_never_deadlocks() {
     let (done, finished) = std::sync::mpsc::channel();
@@ -515,8 +500,7 @@ fn a_failing_op_racing_finish_never_deadlocks() {
 }
 
 /// EVERY REFUSAL OPENS WITH ITS OP (sibling alignment D7; AUDIT-RULES `<op>: <reason>`): an op on
-/// a framing that is no more, and a framing error forwarded from an op, say which op answered.
-/// RED before: `no such framing` and the framing's own words came bare.
+
 #[test]
 fn every_refusal_opens_with_its_op() {
     let p = door();

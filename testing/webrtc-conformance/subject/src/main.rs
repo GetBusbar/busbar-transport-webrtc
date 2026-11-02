@@ -2,23 +2,23 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE BROWSER CELL'S SUBJECT: busbar's terminating path for a datagram association, answering a
-//! headless browser's offer and echoing what it sends.
-//!
-//! The path is the one busbar serves: the `webrtc` door (`busbar_transport_webrtc::door`)
-//! admitted and opened by the root's own doors module (`crates/busbar/src/root/doors.rs`, mounted
-//! here), driven by the connector's datagram driver (`busbar_core_connector::datagram`) over one
-//! host port (`busbar_core_connector::udp::ReadyPort`) with the host's DTLS engine. The browser's
-//! offer arrives as the body of `POST /offer`; the answer is the framer's own description. Every
-//! channel message is echoed on its channel and every line frame on its line, so what the browser
-//! grades is busbar's ICE, DTLS, SRTP and SCTP, end to end.
-//!
-//! `GET /` serves the cell's page (`testing/webrtc-conformance/page/index.html`).
-//!
-//! `--break channel` / `--break media` stop echoing that kind: the negative control, which the
-//! cell must grade red.
-//!
-//! Prints `WEBRTC_SUBJECT_URL=http://<addr>/` on its own line once bound, then serves until
-//! killed. A testkit binary, not a build of `busbar`, and no product surface.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -115,7 +115,7 @@ impl Port {
                 continue;
             }
             if let Some(f) = self.assocs.get_mut(id) {
-                // A refused echo is named here, not left to show as the browser's timeout.
+
                 if let Err(e) = f.emit(g.stream, &g.bytes, g.end_of_frame, g.text, now) {
                     eprintln!(
                         "webrtc-conformance-subject: association {id} refused an echo on stream {}: {e}",
@@ -219,7 +219,7 @@ async fn respond(s: &mut tokio::net::TcpStream, status: &str, kind: &str, body: 
 }
 
 /// `POST /offer`: the accepting association, settled by the browser's offer, joins the port; the
-/// answer is the framer's own description.
+
 fn answer(
     port: &Rc<RefCell<Port>>,
     framer: &Arc<dyn FramerDoor>,
@@ -255,7 +255,7 @@ fn main() {
         _ => Break::None,
     };
     let host = std::env::var("WEBRTC_SUBJECT_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
-    // One worker: the connector registers every socket on the calling worker's reactor.
+
     let worker = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

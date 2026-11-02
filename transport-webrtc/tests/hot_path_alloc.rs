@@ -2,12 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! NO ALLOCATION ON THE HOT PATH (THE DESIGN §11.2): sealing and opening one SRTP packet, the
-//! per-packet work this crate's crypto provider does for the media stack, takes nothing from the
-//! allocator.
-//!
-//! THE WITNESS is this binary's allocator: it counts the allocations made on the measuring thread
-//! while a measurement is armed. THE RED ARM, kept: a `Vec` made under the same measurement is
-//! counted, so a zero below is the code, never a witness that cannot see.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -79,7 +73,6 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
     r.expect("sealed");
     assert_eq!(n, 0, "an SRTP seal allocated {n} times on the hot path");
 
-    // Opened into a buffer as long as the packet (the media stack's RTP scratch) ...
     let mut out = [0_u8; PAYLOAD.len() + 16];
     let (n, r) = allocations(|| {
         AeadAes128GcmCipher::decrypt(&mut *open, &IV, &[&HEADER], &sealed, &mut out)
@@ -88,9 +81,6 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
     assert_eq!(&out[..PAYLOAD.len()], &PAYLOAD[..]);
     assert_eq!(n, 0, "an SRTP open allocated {n} times on the hot path");
 
-    // ... and into one exactly as long as the plaintext, with the pinned stack's SRTCP AAD
-    // layout. A first authenticated report registers its source; later packets reuse that
-    // replay window without allocating. Registration is outside the per-packet measurement.
     let mut seal2 = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], true);
     let mut open2 = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], false);
     let mut exact = [0_u8; PAYLOAD.len()];

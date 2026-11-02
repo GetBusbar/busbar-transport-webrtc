@@ -2,16 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE EXCEPTION TO `ring`-ONLY, CONFINED (THE DESIGN l.753, "Datagram media"): the
-//! `aes`/`cipher`/`inout` crates enter the build for the SRTP key derivation alone.
-//!
-//! * In the resolved graph (`Cargo.lock`, every feature any member turns on): `aes` is depended on
-//!   by this crate and nothing else, `cipher` by `aes` alone and `inout` by `cipher` alone.
-//! * In this crate's source: `aes` is named only by `src/crypto.rs`, and there only by its import
-//!   and by the two SRTP key-derivation rounds (`srtp_aes_128_ecb_round`/`srtp_aes_256_ecb_round`),
-//!   the one AES block (`ecb_round`) having no other caller.
-//!
-//! THE RED ARMS, kept: the same checks over a graph where another crate takes `aes` (or `cipher`
-//! straight), and over a source where the framing names `aes`, must refuse.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +13,6 @@ const GRANTED: &str = "busbar-transport-webrtc";
 const CONFINED: [(&str, &str); 3] = [("aes", GRANTED), ("cipher", "aes"), ("inout", "cipher")];
 
 fn root() -> PathBuf {
-    // This repo's workspace: the logic crate sits one level under it (`transport-webrtc/`).
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(1)
@@ -46,7 +35,6 @@ fn graph(lock: &str) -> BTreeMap<String, Vec<String>> {
             } else if in_deps && line.starts_with(']') {
                 in_deps = false;
             } else if in_deps {
-                // `"name"`, `"name 1.2.3"` or `"name 1.2.3 (registry+…)"`.
                 let entry = line.trim_end_matches(',').trim_matches('"');
                 if let Some(dep) = entry.split_whitespace().next() {
                     deps.push(dep.to_owned());
@@ -96,7 +84,7 @@ const CRYPTO_AES_LINES: [&str; 3] = [
 ];
 
 /// `Err` naming the first source line that names `aes` (or its block traits) outside the SRTP key
-/// derivation. `files` are `(path relative to src, text)`.
+
 fn source_confined(files: &[(String, String)]) -> Result<(), String> {
     let mut rounds = 0;
     for (path, text) in files {
@@ -144,7 +132,6 @@ fn sources(dir: &Path) -> Vec<(String, String)> {
             .unwrap_or_default()
             .to_owned();
         if p.is_dir() {
-            // The crate's own tests (`src/tests/`) name what they test; they never ship.
             if name != "tests" {
                 out.extend(
                     sources(&p)
@@ -174,8 +161,6 @@ fn aes_is_named_only_by_the_srtp_key_derivation_in_the_source() {
     );
     source_confined(&mine).unwrap_or_else(|e| panic!("{e}"));
 }
-
-// ── THE RED ARMS ────────────────────────────────────────────────────────────────────────────────
 
 /// The real lock with `extra` appended as a package of its own.
 fn with_package(extra: &str) -> String {
@@ -220,7 +205,6 @@ fn red_arm_the_framing_naming_aes_is_refused() {
         "{refused}"
     );
 
-    // A third caller of the AES block, even inside the crypto file, is refused too.
     let crypto = files
         .iter()
         .position(|(p, _)| p == "crypto.rs")

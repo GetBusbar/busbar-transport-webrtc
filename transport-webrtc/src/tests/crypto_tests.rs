@@ -2,9 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! SRTP IS AEAD-AES-GCM ONLY (THE DESIGN l.753): the provider's `AES_CM` cipher refuses every
-//! packet, and the shim refuses keying material under any profile but the two GCM ones. The RED
-//! arm beside each refusal is the same call under AEAD-AES-GCM, which goes through: the refusal is
-//! the profile's, not a broken path.
 
 use super::*;
 use crate::framing::{PROFILE_AEAD_AES_128_GCM, PROFILE_AEAD_AES_256_GCM};
@@ -50,7 +47,7 @@ fn red_arm_the_gcm_ciphers_of_the_same_provider_seal_and_open() {
         .decrypt(&iv, &[aad], &sealed, &mut opened)
         .expect("opened");
     assert_eq!(&opened[..n], plain);
-    // A flipped tag bit fails authentication: the GCM path judges, it does not wave through.
+
     sealed[plain.len()] ^= 1;
     assert!(open.decrypt(&iv, &[aad], &sealed, &mut opened).is_err());
 
@@ -70,7 +67,6 @@ fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
     for (profile, why) in [
         (PROFILE_AES_CM_SHA1_80, AES_CM_REFUSED),
         (PROFILE_AES_CM_SHA1_32, AES_CM_REFUSED),
-        // Neither AES_CM nor GCM: refused in the words that name what is admitted.
         (0x0003, crate::shim::PROFILE_REFUSED),
         (0xFFFF, crate::shim::PROFILE_REFUSED),
     ] {
@@ -78,7 +74,7 @@ fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
         assert_eq!(shim.keyed(&material, profile), Err(why));
         assert!(!shim.holds_keying(), "profile {profile:#06x}: nothing held");
     }
-    // RED arm: the two AEAD-AES-GCM profiles are taken, at their own lengths.
+
     for (profile, len) in [
         (PROFILE_AEAD_AES_128_GCM, 56),
         (PROFILE_AEAD_AES_256_GCM, 88),
@@ -90,7 +86,7 @@ fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
 }
 
 /// Keying material whose length is not its profile's never reaches the media stack's key
-/// schedule (which asserts the length): it is refused, and nothing is held.
+
 #[test]
 fn keying_material_of_the_wrong_length_is_refused_and_nothing_is_held() {
     for (profile, len) in [
@@ -114,7 +110,6 @@ fn keying_material_of_the_wrong_length_is_refused_and_nothing_is_held() {
 
 #[test]
 fn the_srtp_key_derivation_block_is_aes() {
-    // FIPS-197 Appendix C.1: AES-128 of 00112233445566778899aabbccddeeff under 000102…0f.
     let key: Vec<u8> = (0..16).collect();
     let input: Vec<u8> = (0..16).map(|i| i * 0x11).collect();
     let mut out = [0_u8; 16];
@@ -126,16 +121,15 @@ fn the_srtp_key_derivation_block_is_aes() {
             0xc5, 0x5a
         ]
     );
-    // A key of the wrong length derives nothing (a zeroed block), and nothing panics.
+
     Ring.srtp_aes_128_ecb_round(&key[..15], &input, &mut out);
     assert_eq!(out, [0_u8; 16]);
 }
 
 /// `Debug` of a keyed shim prints neither the SRTP keying material nor an opened plaintext: a
-/// `{:?}` in a log line carries no key bytes.
+
 #[test]
 fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
-    // 0xCA 0x4A 0x21 0x7E: a canary no other field holds; Debug prints bytes in decimal.
     let canary: [u8; 4] = [0xCA, 0x4A, 0x21, 0x7E];
     let material: Vec<u8> = canary
         .iter()
@@ -166,8 +160,7 @@ fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
 }
 
 /// A CLOSED SHIM SAYS SO (codeaudit shim.rs:370): data sent after the secure session closed is
-/// refused as a closed connection, never "handshake pending", which tells the media stack to keep
-/// it and retry against a session that is over. Before "connected" it is still pending.
+
 #[test]
 fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
     use str0m::crypto::dtls::{DtlsImplError, DtlsInstance};
@@ -187,9 +180,7 @@ fn a_send_on_a_closed_shim_is_refused_as_closed_not_pending() {
 }
 
 /// A PROFILE THAT IS NOT AES_CM IS NOT CALLED AES_CM (codeaudit shim.rs:259): keying material
-/// under a profile code the framer does not know (or the NULL-cipher ones) is refused in words that
-/// name what is admitted, at the keying frame and at the shim alike; the two AES_CM codes keep
-/// theirs. RED before the fix: every unknown code was refused as "SRTP AES_CM".
+
 #[test]
 fn an_unknown_protection_profile_is_not_called_aes_cm() {
     let why = "the keying material's protection profile is not AEAD-AES-GCM";
@@ -215,8 +206,7 @@ fn an_unknown_protection_profile_is_not_called_aes_cm() {
 }
 
 /// THE AEAD-AES-256-GCM PROFILE'S KEY DERIVATION BLOCK IS AES-256 (codeaudit tests crypto.rs:70):
-/// FIPS-197 Appendix C.3. Under AES-128 a 32-byte key derives nothing, and every association keyed
-/// under that profile would fail against a real peer (two ends of this framer would agree).
+
 #[test]
 fn the_256_bit_key_derivation_block_is_aes_256() {
     let key: Vec<u8> = (0..32).collect();
@@ -233,8 +223,7 @@ fn the_256_bit_key_derivation_block_is_aes_256() {
 }
 
 /// THE DIGESTS ARE THE STANDARD ONES (codeaudit tests crypto.rs:357): SHA-256 (RFC 6234 "abc"),
-/// which the description's fingerprint states, and HMAC-SHA1 (RFC 2202 case 1), which signs and
-/// checks every connectivity check.
+
 #[test]
 fn the_digests_meet_their_vectors() {
     assert_eq!(

@@ -2,13 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE FRAMER HOLDS NO PROCESS-GLOBAL STATE (THE DESIGN §2: "A plugin holds no process-global
-//! state: what it keeps is per-instance ... The one owner-approved per-thread slot is the door's
-//! log-capture slot, macro-expanded into each plugin"). The log-capture slot is the door macro's,
-//! expanded in the dropped-in crate; this crate's own source declares no `static`, no
-//! `thread_local!` and no lazily-initialised global of any kind.
-//!
-//! THE RED ARMS, kept: each form, planted in a line of source, is refused; a `'static` lifetime and
-//! a comment are not.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +21,7 @@ fn code(line: &str) -> &str {
 }
 
 /// `code` past its leading attributes (`#[...]`, brackets nested) and its visibility (`pub`, or
-/// `pub(...)` of any path).
+
 fn item(code: &str) -> &str {
     let mut t = code.trim_start();
     while let Some(rest) = t.strip_prefix("#[") {
@@ -65,8 +58,6 @@ fn findings(path: &str, text: &str) -> Vec<String> {
         let code = code(line);
         for form in FORMS {
             let hit = if form == "static " {
-                // A `static` ITEM: the word at the start of the line, after any attributes and any
-                // visibility, never the `'static` lifetime.
                 let t = item(code);
                 t.starts_with("static ") || t.starts_with("static mut ")
             } else {
@@ -120,8 +111,6 @@ fn the_framer_declares_no_static_and_no_per_thread_slot() {
     );
 }
 
-// ── THE RED ARMS ────────────────────────────────────────────────────────────────────────────────
-
 #[test]
 fn red_arm_every_form_is_refused() {
     for line in [
@@ -131,8 +120,6 @@ fn red_arm_every_form_is_refused() {
         "pub(crate) static mut N: u8 = 0;",
         "static ONCE: OnceLock<u8> = OnceLock::new();",
         "let x: LazyLock<u8> = LazyLock::new(|| 1);",
-        // Any visibility, and an attribute on the same line (codeaudit tests
-        // no_process_global.rs:41).
         "pub(super) static CACHE: Mutex<u8> = Mutex::new(0);",
         "pub(in crate::framing) static X: u8 = 0;",
         "#[used] static KEEP: u8 = 0;",
@@ -140,7 +127,7 @@ fn red_arm_every_form_is_refused() {
     ] {
         assert!(!findings("src/x.rs", line).is_empty(), "{line}");
     }
-    // A `'static` lifetime and a comment declare nothing.
+
     assert!(findings("src/x.rs", "fn f(&self) -> &'static dyn Tr { &Ring }").is_empty());
     assert!(findings("src/x.rs", "// no static and no thread_local! here").is_empty());
 }

@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `webrtc` transport: a datagram framer holding ICE, SRTP and SCTP.
-//!
-//! WebRTC mirrors HTTPS layering. The datagram port is the host's (the connector's, no carrier
-//! plugin); DTLS runs in the host's secure layer with the host certificate, demultiplexing the port
-//! and gating each association on ICE. This framer holds what is left: the ICE agent (it answers and
-//! nominates; the host binds only a path it has proven), SRTP (AEAD-AES-GCM only, on ring, with the
-//! keying material the host's secure layer exported) and SCTP data channels. It holds no DTLS state
-//! ([`shim`]). Opus passes through; no codec runs.
-//!
-//! ## One entry: the door
-//!
-//! [`door()`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
-//! in (the sibling `busbar-transport-webrtc-plugin` cdylib exports it as its image's one symbol,
-//! `export_door!`). This crate exports nothing, so linking it adds no door symbol and it holds no
-//! `unsafe` at all.
 
 #![cfg_attr(not(test), forbid(unsafe_code))]
 #![cfg_attr(test, deny(unsafe_code))]
@@ -27,11 +13,10 @@ mod meta;
 mod stun;
 
 #[cfg(test)]
-#[allow(unsafe_code)] // The test allocator reads only explicitly registered initialized payloads.
+#[allow(unsafe_code)]
 #[path = "tests/zeroise_tests.rs"]
 mod zeroise_tests;
 
-// Public for this repo's integration tests: no busbar build names them.
 pub mod crypto;
 pub mod framing;
 pub mod shim;
