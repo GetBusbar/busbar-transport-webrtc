@@ -159,9 +159,10 @@ fn the_linked_and_the_dropped_in_door_are_one_plugin() {
 
 #[test]
 fn the_tests_run_in_the_requested_profile() {
-    if std::env::var_os("BUSBAR_EXPECT_RELEASE").is_some() {
-        assert!(!cfg!(debug_assertions), "release tests were requested");
-    }
+    assert!(
+        std::env::var_os("BUSBAR_EXPECT_RELEASE").is_none() || !cfg!(debug_assertions),
+        "release tests were requested"
+    );
 }
 #[test]
 fn the_transport_inputs_plant_no_credentials_or_foreign_kind_cases() {
