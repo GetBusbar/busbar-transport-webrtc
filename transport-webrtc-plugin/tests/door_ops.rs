@@ -14,7 +14,9 @@ use busbar_contract::abi::transport::{
 };
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{Frame, Plugin};
-use busbar_test_kit::conformance::{self as conf, Leg, Subject};
+#[path = "support/abi.rs"]
+pub mod conf;
+use busbar_plugin_loader::dispatch::{load_linked, DispatchConfig, Dispatcher, LinkedRow};
 use busbar_transport_webrtc::framing::{Framing, Opening, Side, DESCRIPTION};
 
 const CDYLIB: &str = "busbar_transport_webrtc_plugin";
@@ -24,10 +26,10 @@ const CERT: &[u8] = b"the host's public certificate, DER";
 
 /// The linked door, loaded and opened.
 fn door() -> Plugin<Transport> {
-    let s = Subject::new(busbar_transport_webrtc::linked::door, CDYLIB, "{}");
-    let d = conf::dispatcher();
-    let p = conf::load::<Transport>(&s, Leg::Linked, s.bind(&d, "webrtc")).expect("loads");
-    assert_eq!(conf::open(&p, &s.settings()).outcome, Outcome::Ready);
+    let d = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(busbar_transport_webrtc::linked::door).expect("real door statement");
+    let p = load_linked::<Transport>(&row, conf::bind(&d, "webrtc")).expect("loads");
+    assert_eq!(conf::open(&p).outcome, Outcome::Ready);
     p
 }
 

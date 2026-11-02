@@ -10,19 +10,18 @@ use busbar_contract::abi::transport::{
     PIECE_END_OF_FRAME, PIECE_TEXT, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
-use busbar_plugin_loader::dispatch::{load_dropped, Frame, InFrame, LinkedRow, OutFrame, Plugin};
-use busbar_test_kit::conformance::{self as conf, Leg, Subject};
+use busbar_plugin_loader::dispatch::{
+    load_dropped, Called, Frame, InFrame, LinkedRow, OutFrame, Plugin,
+};
+#[path = "abi.rs"]
+pub mod conf;
+use busbar_plugin_loader::dispatch::{
+    load_linked, rendering_of_library, DispatchConfig, Dispatcher,
+};
 
-/// The crate whose cdylib is the dropped-in door.
-const CDYLIB: &str = "busbar_transport_webrtc_plugin";
 /// The host port's address, the one candidate the framer advertises.
 const LOCAL: &str = "198.51.100.1:40000";
-/// The host's public certificate (the framer states its SHA-256; nothing else reads it).
 const CERT: &[u8] = b"the host's public certificate, DER";
-
-fn subject() -> Subject {
-    Subject::new(busbar_transport_webrtc::linked::door, CDYLIB, "{}")
-}
 
 /// The host's buffers for one framer op.
 struct Host {
@@ -88,7 +87,22 @@ impl Host {
     }
 
     /// What the last answer yielded, as one deterministic line: the pieces (stream, flags, and for
-    fn yielded(&self, o: &FramerOut) -> String {
+    fn yielded(
+        &self,
+        outcome: busbar_contract::abi::mechanism::call::Outcome,
+        o: &FramerOut,
+    ) -> String {
+        busbar_contract::abi::transport::check::check_datagram(
+            outcome,
+            o,
+            &self.routes,
+            self.routes.len() as u64,
+        )
+        .expect("the actual product obeys the datagram lane contract");
+        assert_eq!(
+            o.datagram.terms.role,
+            busbar_contract::abi::transport::HANDSHAKE_NONE
+        );
         let n = (o.yielded.pieces_len as usize).min(self.pieces.len());
         let pieces: Vec<String> = self.pieces[..n]
             .iter()
@@ -115,10 +129,16 @@ impl Host {
     }
 }
 
-fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (String, O) {
+fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (Called, O) {
     let mut f = Frame::new(i, conf::output::<O>());
+    let before = p.inner.crossings.load(std::sync::atomic::Ordering::Relaxed);
     let c = p.call(s, &mut f);
-    (conf::called(&c), f.out)
+    assert_eq!(
+        p.inner.crossings.load(std::sync::atomic::Ordering::Relaxed) - before,
+        1,
+        "exact crossing count for slot {s}"
+    );
+    (c, f.out)
 }
 
 /// `begin` on `side`, with the host's certificate and (when `lane`) a lane: its line and token.
@@ -152,17 +172,20 @@ fn begin(p: &Plugin<Transport>, side: u32, lane: bool) -> (String, u64) {
     if lane {
         i.lane = &l;
     }
-    let (called, o): (String, FramerOut) = go(p, slot::BEGIN, i);
+    let (called, o): (Called, FramerOut) = go(p, slot::BEGIN, i);
     (
-        format!("{called} framing={} {}", o.framing != 0, host.yielded(&o)),
+        format!(
+            "{} framing={} {}",
+            conf::called(&called),
+            o.framing != 0,
+            host.yielded(called.outcome, &o)
+        ),
         o.framing,
     )
 }
 
 /// One leg's transcript.
-fn fold(s: &Subject, leg: Leg) -> Vec<String> {
-    let d = conf::dispatcher();
-    let p = conf::load::<Transport>(s, leg, s.bind(&d, "webrtc")).expect("the door loads");
+fn fold(p: &Plugin<Transport>) -> Vec<String> {
     let facts = p
         .context::<TransportFacts>()
         .cloned()
@@ -171,27 +194,23 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         "role={} claims={:?} composes_over={:?}",
         facts.role, facts.claims, facts.composes_over
     )];
-    let settings = s.settings();
-    t.push(format!(
-        "validate {}",
-        conf::called(&conf::validate(&p, &settings))
-    ));
-    t.push(format!("open {}", conf::called(&conf::open(&p, &settings))));
+    t.push(format!("validate {}", conf::called(&conf::validate(p))));
+    t.push(format!("open {}", conf::called(&conf::open(p))));
 
     t.push(format!(
         "listen {}",
-        go::<ListenIn, ListenOut>(&p, slot::LISTEN, conf::input()).0
+        conf::called(&go::<ListenIn, ListenOut>(&p, slot::LISTEN, conf::input()).0)
     ));
     t.push(format!(
         "locate {}",
-        go::<LocateIn, LocateOut>(&p, slot::LOCATE, conf::input()).0
+        conf::called(&go::<LocateIn, LocateOut>(&p, slot::LOCATE, conf::input()).0)
     ));
     let mut host = Host::new();
     let mut e: EncodeIn = conf::input();
     e.sink = host.sink();
     t.push(format!(
         "encode {}",
-        go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0
+        conf::called(&go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0)
     ));
 
     t.push(format!(
@@ -209,10 +228,9 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         let mut i: IngestIn = conf::input();
         (i.framing, i.bytes, i.len, i.sink, i.lane) =
             (token, junk.as_ptr(), junk.len(), host.sink(), &l);
-        t.push(format!(
-            "{step} {}",
-            go::<IngestIn, FramerOut>(&p, slot::INGEST, i).0
-        ));
+        let (answer, output) = go::<IngestIn, FramerOut>(&p, slot::INGEST, i);
+        host.yielded(answer.outcome, &output);
+        t.push(format!("{step} {}", conf::called(&answer)));
     }
 
     let (line, token) = begin(&p, SIDE_ACCEPT, true);
@@ -222,9 +240,24 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         let l = host.lane(0);
         let mut i: FinishIn = conf::input();
         (i.framing, i.sink, i.lane) = (token, host.sink(), &l);
-        let (called, o): (String, FramerOut) = go(&p, slot::FINISH, i);
-        t.push(format!("{step} {called} {}", host.yielded(&o)));
+        let (called, o): (Called, FramerOut) = go(&p, slot::FINISH, i);
+        t.push(format!(
+            "{step} {} {}",
+            conf::called(&called),
+            host.yielded(called.outcome, &o)
+        ));
     }
+    let mut host = Host::new();
+    let lane = host.lane(LANE_RENDEZVOUS);
+    let mut input: IngestIn = conf::input();
+    input.framing = u64::MAX;
+    input.bytes = junk.as_ptr();
+    input.len = junk.len();
+    input.sink = host.sink();
+    input.lane = &lane;
+    let (answer, output) = go::<IngestIn, FramerOut>(p, slot::INGEST, input);
+    host.yielded(answer.outcome, &output);
+    t.push(format!("ingest on no framing {}", conf::called(&answer)));
     t.push(format!("close {}", conf::called(&conf::close(&p))));
     t
 }
@@ -249,6 +282,7 @@ fn expected() -> Vec<String> {
         "begin accept Ready lease=false  framing=true pieces=[] routes=0 flags=0".into(),
         format!("finish Ready lease=false  pieces=[] routes=0 flags={YIELD_ENDED}"),
         "finish again Failed lease=false finish: no such framing".into(),
+        "ingest on no framing Failed lease=false ingest: no such framing".into(),
         "close Ready lease=false ".into(),
     ]
 }
@@ -256,15 +290,23 @@ fn expected() -> Vec<String> {
 /// THE WITNESS: the dropped-in library states exactly the linked door's Statement, and the two
 #[test]
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
-    let s = subject();
-    let linked_row = LinkedRow::of_raw(s.door).expect("the linked door is admitted");
+    let row =
+        LinkedRow::of(busbar_transport_webrtc::linked::door).expect("the linked door is admitted");
+    let d = Dispatcher::new(DispatchConfig::default());
+    let stated = rendering_of_library(&conf::cdylib())
+        .expect("renders")
+        .expect("real exported door");
     assert_eq!(
-        linked_row.statement,
-        s.stated(),
+        row.statement, stated,
         "the dropped-in library states exactly the linked door's Statement"
     );
-    let linked = fold(&s, Leg::Linked);
-    let dropped = fold(&s, Leg::Dropped);
+    let linked_plugin =
+        load_linked::<Transport>(&row, conf::bind(&d, "webrtc-linked")).expect("linked door");
+    let dropped_plugin =
+        load_dropped::<Transport>(&conf::cdylib(), &stated, conf::bind(&d, "webrtc-dropped"))
+            .expect("dropped door");
+    let linked = fold(&linked_plugin);
+    let dropped = fold(&dropped_plugin);
     assert_eq!(linked, dropped, "the two doors part");
     let want = expected();
     assert_eq!(linked.len(), want.len(), "{linked:#?}");
@@ -276,16 +318,18 @@ fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
 /// A dropped-in library stating a different rendering is refused.
 #[test]
 fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {
-    let s = subject();
-    let d = conf::dispatcher();
-    let own = s.stated();
+    let d = Dispatcher::new(DispatchConfig::default());
+    let row = LinkedRow::of(busbar_transport_webrtc::linked::door).expect("real linked door");
+    let own = rendering_of_library(&conf::cdylib())
+        .expect("renders")
+        .expect("real exported door");
     let mut other = own.clone();
     let last = other.len() - 1;
     other[last] ^= 0x01;
     assert!(
-        load_dropped::<Transport>(&s.cdylib(), &other, s.bind(&d, "webrtc-other")).is_err(),
+        load_dropped::<Transport>(&conf::cdylib(), &other, conf::bind(&d, "webrtc-other")).is_err(),
         "a library admitted against another Statement must be refused"
     );
-    assert!(load_dropped::<Transport>(&s.cdylib(), &own, s.bind(&d, "webrtc-own")).is_ok());
-    assert!(conf::load::<Transport>(&s, Leg::Linked, s.bind(&d, "webrtc-linked")).is_ok());
+    assert!(load_dropped::<Transport>(&conf::cdylib(), &own, conf::bind(&d, "webrtc-own")).is_ok());
+    assert!(load_linked::<Transport>(&row, conf::bind(&d, "webrtc-linked")).is_ok());
 }

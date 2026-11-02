@@ -28,4 +28,4 @@ busbar-contract = { workspace = true }
 # admitted by busbar's real loader, run one script to one transcript (Part 2 #2). Dev-only, never in
 # the shipped artifact. Same pinned rev, so one busbar source resolves.
 busbar-plugin-loader = { workspace = true }
-busbar-test-kit = { workspace = true }
+serde_json = { workspace = true }
