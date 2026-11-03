@@ -176,6 +176,8 @@ pub struct Framing {
     /// SCTP stream ids (one per data channel) that failed alone.
     failed_sids: HashSet<u64>,
     next_channel: u64,
+    /// Mixed offers must publish channel metadata before the host mirrors their opening.
+    opening_channel_pending: bool,
     medias: HashMap<Mid, u64>,
     media_by_stream: HashMap<u64, Mid>,
     media_clock: HashMap<u64, u64>,
@@ -357,6 +359,7 @@ impl Framing {
             full: HashSet::new(),
             failed_sids: HashSet::new(),
             next_channel: 1,
+            opening_channel_pending: false,
             medias: HashMap::new(),
             media_by_stream: HashMap::new(),
             media_clock: HashMap::new(),
@@ -480,6 +483,11 @@ impl Framing {
                 if self.described {
                     return Err("a second offer on one association".into());
                 }
+                self.opening_channel_pending = values(text, "m=application ").any(|line| {
+                    line.split_whitespace()
+                        .next()
+                        .is_some_and(|port| port != "0")
+                });
                 let offer = SdpOffer::from_sdp_string(text)
                     .map_err(|e| format!("the offer did not parse: {e}"))?;
                 let answer = self
@@ -1061,7 +1069,11 @@ impl Framing {
                     self.fail_stream(s, "the far end's channel label holds a line break");
                     return;
                 }
-                self.head(s, &[("label", &label)]);
+                if std::mem::take(&mut self.opening_channel_pending) {
+                    self.head(s, &[("label", &label), ("opening-pending", "0")]);
+                } else {
+                    self.head(s, &[("label", &label)]);
+                }
             }
             Event::ChannelData(d) => {
                 if !(self.verified && self.keyed) {
@@ -1116,7 +1128,18 @@ impl Framing {
             {
                 let n = self.medias.len() as u64;
                 let s = self.media(m.mid, n);
-                self.head(s, &[("kind", "audio"), ("codec", "opus")]);
+                if self.opening_channel_pending {
+                    self.head(
+                        s,
+                        &[
+                            ("kind", "audio"),
+                            ("codec", "opus"),
+                            ("opening-pending", "1"),
+                        ],
+                    );
+                } else {
+                    self.head(s, &[("kind", "audio"), ("codec", "opus")]);
+                }
             }
             Event::MediaData(d) => {
                 if !(self.verified && self.keyed) || self.pieces.len() >= MAX_QUEUED {

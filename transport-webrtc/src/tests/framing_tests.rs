@@ -345,7 +345,7 @@ fn an_offer_and_an_answer_settle_terms_and_a_session_carries_messages_and_media_
             .map(|p| (p.stream, p.bytes.clone()))
     };
     let (accept_stream, label) = head(&accept).expect("the accepting end opened the channel");
-    assert_eq!(label, b"label: events\r\n");
+    assert_eq!(label, b"label: events\r\nopening-pending: 0\r\n");
     dial.f
         .emit(1, b"{\"type\":\"hello\"}", true, now)
         .expect("sent");
@@ -359,6 +359,18 @@ fn an_offer_and_an_answer_settle_terms_and_a_session_carries_messages_and_media_
         [b"{\"type\":\"hello\"}".to_vec()]
     );
     assert_eq!(heard(&dial, 1), [b"{\"type\":\"world\"}".to_vec()]);
+
+    let binary = [0, 255, 1, 2];
+    dial.f.emit(1, &binary, false, now).unwrap();
+    accept.f.emit(accept_stream, &binary, false, now).unwrap();
+    run(&mut dial, &mut accept, &mut now, 500);
+    for end in [&dial, &accept] {
+        assert!(end.pieces.iter().any(|p| p.bytes == binary && !p.text));
+        assert!(end
+            .pieces
+            .iter()
+            .any(|p| p.text && p.bytes.starts_with(b"{\"type\":")));
+    }
 
     let media = accept
         .pieces
@@ -1241,4 +1253,33 @@ fn a_failed_association_refuses_host_updates_and_both_emit_paths() {
         assert_eq!(dial.f.failure(), Some(why));
         assert!(dial.f.next_route().is_none());
     }
+}
+
+#[test]
+fn a_mixed_offer_marks_its_opening_pending_until_the_channel_is_known() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    accept.f.rendezvous(&dial.description(), now).unwrap();
+    accept.collect();
+    assert!(accept.f.opening_channel_pending);
+    accept.f.event(Event::MediaAdded(str0m::media::MediaAdded {
+        mid: *dial.f.medias.keys().next().unwrap(),
+        kind: MediaKind::Audio,
+        direction: Direction::SendRecv,
+        simulcast: None,
+    }));
+    accept.collect();
+    let head = accept.pieces.iter().find(|p| p.fields).unwrap();
+    assert!(head
+        .bytes
+        .windows(b"opening-pending: 1".len())
+        .any(|s| s == b"opening-pending: 1"));
+    let (_, connected, _) = connected();
+    assert!(!connected.f.opening_channel_pending);
+    assert!(connected.pieces.iter().any(|p| p.fields
+        && p.bytes.starts_with(b"label:")
+        && p.bytes
+            .windows(b"opening-pending: 0".len())
+            .any(|s| s == b"opening-pending: 0")));
 }
