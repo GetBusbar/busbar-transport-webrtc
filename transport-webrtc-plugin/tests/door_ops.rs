@@ -359,7 +359,7 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
     )
     .expect("begins");
     far.rendezvous(&offer, now).expect("the offer is taken");
-    let answer = std::mem::take(&mut far.next_piece().expect("the answer").bytes);
+    let answer = far.next_piece().expect("the answer").into_bytes();
     host.path(1, FAR);
     let mut last = ingest(&p, &mut host, token, LANE_RENDEZVOUS, &answer);
     for step in 0..200 {
@@ -547,7 +547,7 @@ fn finish_reports_a_datagram_that_cannot_fit_the_wire_sink() {
     )
     .unwrap();
     far.rendezvous(&offer, now).unwrap();
-    let answer = std::mem::take(&mut far.next_piece().unwrap().bytes);
+    let answer = far.next_piece().unwrap().into_bytes();
     host.path(1, FAR);
     host.routes.clear();
     let mut last = ingest(&p, &mut host, opened.framing, LANE_RENDEZVOUS, &answer);

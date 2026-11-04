@@ -28,7 +28,7 @@ use crate::shim::Shim;
 
 const MARK: [u8; 8] = *b"ZEROISE!";
 const KEY_LEN: usize = 56;
-const IDS: usize = 9;
+const IDS: usize = 11;
 
 static REGISTERED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
@@ -371,14 +371,14 @@ impl End {
     }
 
     /// The description this end yielded on stream 0.
-    fn description(&mut self) -> Vec<u8> {
+    fn description(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
         self.collect();
         let at = self
             .pieces
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        std::mem::take(&mut self.pieces.remove(at).bytes)
+        self.pieces.remove(at).into_bytes()
     }
 
     fn collect(&mut self) {
@@ -613,4 +613,64 @@ fn session_description_payload_is_zeroised_on_drop() {
     all_freed(8);
     #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(8), 0);
+}
+
+fn description_piece(id: u8) -> Piece {
+    Piece {
+        stream: DESCRIPTION,
+        bytes: key(id).to_vec(),
+        fields: false,
+        text: true,
+        end: false,
+        failed: false,
+        writable: false,
+    }
+}
+
+#[cfg_attr(target_os = "linux", test)]
+fn extracting_a_description_preserves_its_allocation_until_the_wiping_owner_drops() {
+    let piece = description_piece(9);
+    owned(&piece.bytes);
+    let address = piece.bytes.as_ptr();
+    let capacity = piece.bytes.capacity();
+    let bytes = piece.into_bytes();
+    assert_eq!(
+        bytes.as_ptr(),
+        address,
+        "extraction transfers the allocation"
+    );
+    assert_eq!(bytes.capacity(), capacity);
+    assert_eq!(bytes.as_slice(), key(9));
+    assert_eq!(FREED[9].load(Ordering::SeqCst), 0);
+    drop(bytes);
+    all_freed(9);
+    #[cfg(target_os = "linux")]
+    assert_eq!(freed_unzeroed(9), 0);
+}
+
+#[cfg_attr(target_os = "linux", test)]
+fn cancelling_a_borrowed_description_crossing_wipes_the_extracted_owner() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let piece = description_piece(10);
+    owned(&piece.bytes);
+    let bytes = piece.into_bytes();
+    let mut crossing = Box::pin(async move {
+        // Keep the extracted owner alive while a borrowed crossing is suspended.
+        let borrowed = bytes.as_slice();
+        std::future::pending::<()>().await;
+        std::hint::black_box(borrowed);
+    });
+    assert_eq!(
+        crossing
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Pending
+    );
+    assert_eq!(FREED[10].load(Ordering::SeqCst), 0);
+    drop(crossing);
+    all_freed(10);
+    #[cfg(target_os = "linux")]
+    assert_eq!(freed_unzeroed(10), 0);
 }

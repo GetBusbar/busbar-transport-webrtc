@@ -63,14 +63,14 @@ impl End {
     }
 
     /// The description this end yielded on stream 0.
-    fn description(&mut self) -> Vec<u8> {
+    fn description(&mut self) -> zeroize::Zeroizing<Vec<u8>> {
         self.collect();
         let at = self
             .pieces
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        std::mem::take(&mut self.pieces.remove(at).bytes)
+        self.pieces.remove(at).into_bytes()
     }
 
     fn collect(&mut self) {
@@ -1200,13 +1200,14 @@ fn the_route_nominating_and_message_caps_hold() {
 #[test]
 fn the_description_states_the_certificates_sha_256() {
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), Instant::now());
-    let offer = String::from_utf8(dial.description()).expect("text");
+    let offer = dial.description();
+    let offer = std::str::from_utf8(&offer).expect("text");
     let want: Vec<String> = ring::digest::digest(&ring::digest::SHA256, CERT)
         .as_ref()
         .iter()
         .map(|b| format!("{b:02X}"))
         .collect();
-    let stated = values(&offer, "a=fingerprint:sha-256 ")
+    let stated = values(offer, "a=fingerprint:sha-256 ")
         .next()
         .expect("a fingerprint line");
     assert_eq!(stated.trim().to_ascii_uppercase(), want.join(":"));
@@ -1364,14 +1365,18 @@ fn unauthenticated_trailing_use_candidate_never_nominates() {
 
 #[test]
 fn media_transport_parameters_override_session_defaults_on_both_peers() {
-    fn with_defaults(description: Vec<u8>) -> Vec<u8> {
-        let mut text = String::from_utf8(description).expect("SDP is text");
-        let at = text.find("m=").expect("a media section");
-        text.insert_str(
-            at,
-            &format!("a=ice-ufrag:unusedSessionUser\r\na=ice-pwd:unusedSessionPassword0123456789\r\na=fingerprint:sha-256 {}\r\na=setup:passive\r\n", ["00"; 32].join(":")),
-        );
-        text.into_bytes()
+    fn with_defaults(description: zeroize::Zeroizing<Vec<u8>>) -> zeroize::Zeroizing<Vec<u8>> {
+        let at = std::str::from_utf8(&description)
+            .expect("SDP is text")
+            .find("m=")
+            .expect("a media section");
+        let defaults = format!("a=ice-ufrag:unusedSessionUser\r\na=ice-pwd:unusedSessionPassword0123456789\r\na=fingerprint:sha-256 {}\r\na=setup:passive\r\n", ["00"; 32].join(":"));
+        let mut text =
+            zeroize::Zeroizing::new(Vec::with_capacity(description.len() + defaults.len()));
+        text.extend_from_slice(&description[..at]);
+        text.extend_from_slice(defaults.as_bytes());
+        text.extend_from_slice(&description[at..]);
+        text
     }
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);

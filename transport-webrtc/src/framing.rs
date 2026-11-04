@@ -108,6 +108,16 @@ pub struct Piece {
     pub writable: bool,
 }
 
+impl Piece {
+    /// Consume this piece while retaining wiping ownership of its payload.
+    ///
+    /// Session descriptions contain ICE credentials. Keep the returned owner alive across
+    /// borrowed crossings, or transfer it into another owner that wipes on release.
+    pub fn into_bytes(mut self) -> Zeroizing<Vec<u8>> {
+        Zeroizing::new(std::mem::take(&mut self.bytes))
+    }
+}
+
 impl Drop for Piece {
     fn drop(&mut self) {
         if self.stream == DESCRIPTION {
