@@ -86,6 +86,7 @@ fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
 }
 
 /// Keying material whose length is not its profile's never reaches the media stack's key
+/// schedule (which asserts the length): it is refused, and nothing is held.
 #[test]
 fn keying_material_of_the_wrong_length_is_refused_and_nothing_is_held() {
     for (profile, len) in [
@@ -126,6 +127,7 @@ fn the_srtp_key_derivation_block_is_aes() {
 }
 
 /// `Debug` of a keyed shim prints neither the SRTP keying material nor an opened plaintext: a
+/// `{:?}` in a log line carries no key bytes.
 #[test]
 fn debug_of_a_keyed_shim_prints_no_key_or_plaintext_bytes() {
     let canary: [u8; 4] = [0xCA, 0x4A, 0x21, 0x7E];

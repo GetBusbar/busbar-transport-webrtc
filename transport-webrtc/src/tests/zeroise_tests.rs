@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Exact initialized payloads retained by the real shim and framing, observed immediately before
+//! their allocations are freed. Linux reads those physical ranges through `/proc/self/mem` into
+//! initialized stack storage: the allocator never forms a Rust reference to the released payload.
 
 use core::net::SocketAddr;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -26,7 +28,7 @@ use crate::shim::Shim;
 
 const MARK: [u8; 8] = *b"ZEROISE!";
 const KEY_LEN: usize = 56;
-const IDS: usize = 8;
+const IDS: usize = 9;
 
 static REGISTERED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
 static FREED: [AtomicUsize; IDS] = [const { AtomicUsize::new(0) }; IDS];
@@ -104,6 +106,7 @@ pub(crate) fn owned(bytes: &[u8]) {
 }
 
 /// KeyingMaterial::new in the pinned dependency creates a Vec whose entire initialized payload
+/// this public slice exposes. It is retained and destroyed by the actual media stack.
 pub(crate) fn upstream(bytes: &[u8]) {
     register(bytes, true);
 }
@@ -375,7 +378,7 @@ impl End {
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        self.pieces.remove(at).bytes
+        std::mem::take(&mut self.pieces.remove(at).bytes)
     }
 
     fn collect(&mut self) {
@@ -468,6 +471,7 @@ fn opening() -> Opening {
 }
 
 /// Two ends through the rendezvous, ICE, verification and keying with `material`: a connected
+/// association (the framer's own unit tests' simulated host, `src/tests/framing_tests.rs`).
 fn connected_with(material: &[u8]) -> (End, End, Instant) {
     let mut now = Instant::now();
     let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
@@ -497,6 +501,8 @@ fn connected_with(material: &[u8]) -> (End, End, Instant) {
 }
 
 /// THE PLUGIN'S OWN COPIES on the accepted path: keying material presented to a verified
+/// association passes through the framing and its shim, and none of what the plugin holds is
+/// freed unzeroed. The upstream KeyingMaterial payload is counted apart (next test).
 #[cfg_attr(target_os = "linux", test)]
 fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
     let material = key(5);
@@ -514,6 +520,9 @@ fn keying_material_the_plugin_holds_on_the_accepted_path_is_zeroised() {
 }
 
 /// KNOWN RESIDUAL, ASSERTED AS KNOWN (listed in the README): the published str0m 0.24.1 and
+/// dimpl 0.7.4 free the KeyingMaterial payload unzeroed. This test follows that actual payload
+/// through the accepted pair and fails when upstream starts zeroising, which is the cue to turn it
+/// into a gate and delete the README note.
 #[cfg_attr(target_os = "linux", test)]
 fn known_residual_upstream_copies_of_the_keying_material_are_freed_unzeroed() {
     let material = key(6);
@@ -584,4 +593,24 @@ fn accepted_framing_behavior_only_without_linux_wipe_proof() {
 #[test]
 fn queued_plaintext_behavior_only_without_linux_wipe_proof() {
     plaintext_queued_for_sealing_is_zeroised();
+}
+
+#[cfg_attr(target_os = "linux", test)]
+fn session_description_payload_is_zeroised_on_drop() {
+    let piece = Piece {
+        stream: DESCRIPTION,
+        bytes: key(8).to_vec(),
+        fields: false,
+        text: true,
+        end: false,
+        failed: false,
+        writable: false,
+    };
+    owned(&piece.bytes);
+    let rendered = format!("{piece:?}");
+    assert!(rendered.contains("<redacted session description>"));
+    drop(piece);
+    all_freed(8);
+    #[cfg(target_os = "linux")]
+    assert_eq!(freed_unzeroed(8), 0);
 }

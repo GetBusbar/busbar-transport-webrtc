@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE ASSOCIATION'S FRAMING: the media stack (ICE, SRTP, SCTP) over the host's datagram port and
+//! secure layer, with no ABI type in it ([`crate::door`] lowers it onto the transport kind's table).
 
 use core::net::SocketAddr;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -32,19 +33,28 @@ pub const PROFILE_AEAD_AES_256_GCM: u32 = 0x0008;
 /// The most messages held for one channel (not yet open, or with no room in the stack).
 const MAX_HELD: usize = 256;
 /// The most routes, and the most data pieces, queued for the host at once: past it a route is
+/// dropped (a datagram network loses them anyway); an output overflow that cannot report a
+/// stream failure ends the association.
 pub(crate) const MAX_QUEUED: usize = MAX_HELD * 4;
 
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
+/// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
+/// checks pairs again). Browsers fail a connection after the same 30 seconds without a working
+/// pair.
 const ICE_FAILED_AFTER: Duration = Duration::from_secs(30);
 /// The most nominating checks awaiting their answer.
 const MAX_NOMINATING: usize = 64;
 /// The most candidates read from the far end's description: the rendezvous terms stay small enough
+/// to fit a host's frame buffer whole.
 const MAX_CANDIDATES: usize = 32;
 /// The largest message a channel carries: the media stack's send buffer (its default), which a
+/// larger message could never enter.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Why an empty channel message fails its stream: the media stack cannot send one (its SCTP writes
+/// no chunk for it, yet spends the ordered stream's next sequence number, wedging the channel).
 const EMPTY_REFUSED: &str = "an empty message, which the media stack cannot send";
 /// A channel's held messages at which its stream is FULL (the host emits nothing more on it until
+/// its writable piece) ...
 const HIGH_WATER: usize = 64;
 /// ... and at or below which a full stream is writable again.
 const LOW_WATER: usize = 16;
@@ -79,7 +89,7 @@ pub struct Route {
 }
 
 /// One piece for the layer above.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Piece {
     /// The stream.
     pub stream: u64,
@@ -98,6 +108,32 @@ pub struct Piece {
     pub writable: bool,
 }
 
+impl Drop for Piece {
+    fn drop(&mut self) {
+        if self.stream == DESCRIPTION {
+            self.bytes.zeroize();
+        }
+    }
+}
+
+impl std::fmt::Debug for Piece {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("Piece");
+        d.field("stream", &self.stream);
+        if self.stream == DESCRIPTION {
+            d.field("bytes", &"<redacted session description>");
+        } else {
+            d.field("bytes", &self.bytes);
+        }
+        d.field("fields", &self.fields)
+            .field("text", &self.text)
+            .field("end", &self.end)
+            .field("failed", &self.failed)
+            .field("writable", &self.writable)
+            .finish()
+    }
+}
+
 /// A path request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
@@ -108,7 +144,7 @@ pub enum Request {
 }
 
 /// What the host's secure layer runs under.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Terms {
     /// This end opens the handshake.
     pub initiates: bool,
@@ -124,6 +160,20 @@ pub struct Terms {
     pub peer_fingerprint: [u8; 32],
     /// The far end's datagram candidates, `ip:port` each.
     pub candidates: Vec<SocketAddr>,
+}
+
+impl std::fmt::Debug for Terms {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Terms")
+            .field("initiates", &self.initiates)
+            .field("local_user", &self.local_user)
+            .field("local_secret", &"<redacted>")
+            .field("remote_user", &self.remote_user)
+            .field("remote_secret", &"<redacted>")
+            .field("peer_fingerprint", &self.peer_fingerprint)
+            .field("candidates", &self.candidates)
+            .finish()
+    }
 }
 
 /// What a dialling framing offers: its channels' labels and whether it carries audio.
@@ -145,6 +195,7 @@ pub struct Framing {
     /// The description pair settled: the media stack's handshake slot takes the relay.
     settled: bool,
     /// What the framer owes its shim and could not hand it yet (the description pair is not
+    /// settled): keying, then "connected". Zeroed on drop.
     relay: VecDeque<Zeroizing<Vec<u8>>>,
     told_connected: bool,
     /// The buffer an opened plaintext is relayed in, reused (zeroed between uses).
@@ -183,6 +234,7 @@ pub struct Framing {
     media_clock: HashMap<u64, u64>,
     next_timeout: Option<Instant>,
     /// When ICE went "disconnected" and has not come back; past [`ICE_FAILED_AFTER`] the path has
+    /// failed and the association ends.
     disconnected_since: Option<Instant>,
     /// The clock the last call ran at: an event the media stack hands up is stamped with it.
     now: Option<Instant>,
@@ -203,6 +255,7 @@ impl std::fmt::Debug for Framing {
 
 impl Drop for Framing {
     /// This framing's own copy of its check secret is cleared with it (the keying material it has
+    /// not yet relayed is held zeroising).
     fn drop(&mut self) {
         self.local_creds.pass.zeroize();
     }
@@ -221,6 +274,39 @@ fn values<'a>(description: &'a str, prefix: &'a str) -> impl Iterator<Item = &'a
     description
         .lines()
         .filter_map(move |l| l.trim_end_matches('\r').strip_prefix(prefix))
+}
+
+/// Apply first-media transport overrides before handing the SDP to the pinned single-transport stack.
+fn transport_description(description: &str) -> Zeroizing<String> {
+    let Some(at) = description.find("\nm=").map(|n| n + 1) else {
+        return Zeroizing::new(description.to_owned());
+    };
+    let (session, media) = description.split_at(at);
+    let first_media = media.find("\nm=").map_or(media, |end| &media[..end]);
+    let prefixes = ["a=ice-ufrag:", "a=ice-pwd:", "a=fingerprint:", "a=setup:"];
+    let overridden = |line: &str| {
+        prefixes
+            .iter()
+            .any(|prefix| line.starts_with(prefix) && values(first_media, prefix).next().is_some())
+    };
+    let capacity = session
+        .lines()
+        .filter(|line| !overridden(line))
+        .chain(first_media.lines().filter(|line| overridden(line)))
+        .map(|line| line.len() + 2)
+        .sum::<usize>()
+        + media.len();
+    let mut normalized = Zeroizing::new(String::with_capacity(capacity));
+    for line in session.lines().filter(|line| !overridden(line)) {
+        normalized.push_str(line);
+        normalized.push_str("\r\n");
+    }
+    for line in first_media.lines().filter(|line| overridden(line)) {
+        normalized.push_str(line);
+        normalized.push_str("\r\n");
+    }
+    normalized.push_str(media);
+    normalized
 }
 
 /// The far end's half of the terms: check user, check secret, certificate fingerprint, candidates.
@@ -275,6 +361,8 @@ fn read_remote(description: &str) -> Result<Remote, Failed> {
 }
 
 /// Whether this end opens the handshake. The media stack takes the role opposite the far end's
+/// `a=setup:` (an `actpass` or absent one leaves this end passive), so this end initiates exactly
+/// when the far end said `passive`.
 fn initiates(description: &str) -> bool {
     values(description, "a=setup:")
         .next()
@@ -282,6 +370,7 @@ fn initiates(description: &str) -> bool {
 }
 
 /// A fresh check credential: `n` random bytes as lower-case hex (RFC 8445 §5.3: the user at least
+/// 24 bits, the secret at least 128).
 fn credential(n: usize) -> Result<String, Failed> {
     let bytes: [u8; 32] = crate::crypto::random().ok_or("the host has no randomness")?;
     Ok(bytes[..n].iter().map(|b| format!("{b:02x}")).collect())
@@ -310,6 +399,7 @@ pub fn opus_samples(packet: &[u8]) -> u64 {
 
 impl Framing {
     /// Begin a framing on `side`. `certificate` is the host's public certificate (its fingerprint is
+    /// what this end's description states); `opening` is what a dialling end offers.
     pub fn begin(
         side: Side,
         certificate: &[u8],
@@ -402,7 +492,7 @@ impl Framing {
     fn describe(&mut self, description: String) {
         let description = self.with_candidate(description);
         self.described = true;
-        self.pieces.push_back(Piece {
+        self.push_piece(Piece {
             stream: DESCRIPTION,
             bytes: description.into_bytes(),
             fields: false,
@@ -415,18 +505,20 @@ impl Framing {
 
     /// A description with this end's one host candidate, when the host has told it its port.
     fn with_candidate(&self, description: String) -> String {
+        let mut description = Zeroizing::new(description);
         let Some(local) = self.local else {
-            return description;
+            return std::mem::take(&mut *description);
         };
         if description.contains("a=candidate:") {
-            return description;
+            return std::mem::take(&mut *description);
         }
         let line = format!(
             "a=candidate:1 1 udp 2130706431 {} {} typ host\r\n",
             local.ip(),
             local.port()
         );
-        let mut out = String::with_capacity(description.len() + line.len() * 2);
+        let count = values(&description, "a=ice-pwd:").count();
+        let mut out = String::with_capacity(description.len() + line.len() * count);
         for l in description.split_inclusive('\n') {
             out.push_str(l);
             if l.starts_with("a=ice-pwd:") {
@@ -457,8 +549,16 @@ impl Framing {
     }
 
     /// Path `path` is at `addr` (path `0` is none): an address it pointed at before, or a path
+    /// `addr` belonged to before, is forgotten, so the two maps hold only what is current.
     fn point(&mut self, path: u32, addr: SocketAddr) {
-        if path == 0 {
+        if path == 0 || self.failed.is_some() {
+            return;
+        }
+        if self.paths.len() >= MAX_QUEUED
+            && !self.paths.contains_key(&path)
+            && !self.addrs.contains_key(&addr)
+        {
+            self.fail("the association's path history reached its capacity".into());
             return;
         }
         if let Some(old) = self.paths.insert(path, addr) {
@@ -477,6 +577,8 @@ impl Framing {
     pub fn rendezvous(&mut self, description: &[u8], now: Instant) -> Result<(), Failed> {
         let text =
             std::str::from_utf8(description).map_err(|_| "a description that is not text")?;
+        let normalized = transport_description(text);
+        let text = normalized.as_str();
         let (remote_user, remote_secret, peer_fingerprint, candidates) = read_remote(text)?;
         match self.side {
             Side::Accept => {
@@ -524,6 +626,7 @@ impl Framing {
     }
 
     /// The host's state at this call: the bound path, the verified bit, and the keying-material item
+    /// when it presents one (`(profile, material)`).
     pub fn host(
         &mut self,
         bound: u32,
@@ -567,6 +670,7 @@ impl Framing {
     }
 
     /// Hand the shim what it is owed, once the description pair settled (before that, the media
+    /// stack's handshake slot takes nothing).
     fn flush_relay(&mut self, now: Instant) {
         if !self.settled {
             return;
@@ -605,6 +709,9 @@ impl Framing {
             return;
         }
         self.point(path, from);
+        if self.failed.is_some() {
+            return;
+        }
         match lane {
             Lane::Secured => {
                 if self.verified && self.keyed && self.settled {
@@ -673,6 +780,7 @@ impl Framing {
     }
 
     /// Remember a nominating check, holding the set bounded (a flood of checks evicts the set,
+    /// never grows it).
     fn track(&mut self, txid: [u8; 12], path: u32) {
         if self.nominating.len() >= MAX_NOMINATING {
             self.nominating.clear();
@@ -785,13 +893,14 @@ impl Framing {
     }
 
     /// Stream `stream` fails, alone: its held messages are dropped and the layer above gets its
+    /// failure piece, once. The association and every other stream carry on.
     pub fn fail_stream(&mut self, stream: u64, why: &str) {
         if !self.carries(stream) || !self.failed_sids.insert(stream) {
             return;
         }
         self.held.remove(&stream);
         self.full.remove(&stream);
-        self.pieces.push_back(Piece {
+        self.push_piece(Piece {
             stream,
             bytes: why.as_bytes().to_vec(),
             fields: false,
@@ -873,6 +982,17 @@ impl Framing {
         s
     }
 
+    fn push_piece(&mut self, piece: Piece) {
+        if self.failed.is_some() {
+            return;
+        }
+        if self.pieces.len() >= MAX_QUEUED {
+            self.fail("the association's output queue reached its capacity".into());
+            return;
+        }
+        self.pieces.push_back(piece);
+    }
+
     fn head(&mut self, stream: u64, fields: &[(&str, &str)]) {
         let mut block = Vec::new();
         for (n, v) in fields {
@@ -881,7 +1001,7 @@ impl Framing {
             block.extend_from_slice(v.as_bytes());
             block.extend_from_slice(b"\r\n");
         }
-        self.pieces.push_back(Piece {
+        self.push_piece(Piece {
             stream,
             bytes: block,
             fields: true,
@@ -904,6 +1024,9 @@ impl Framing {
             for stream in sids {
                 self.flush_held(stream);
             }
+        }
+        if self.failed.is_some() {
+            return;
         }
         for _ in 0..10_000 {
             let out = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -934,6 +1057,9 @@ impl Framing {
                     false
                 }
             };
+            if self.failed.is_some() {
+                return;
+            }
             if waits {
                 break;
             }
@@ -953,6 +1079,7 @@ impl Framing {
     }
 
     /// A held queue's messages, in order, while the media stack takes them. A full stream drained
+    /// to its low-water mark is writable again; a write the stack refuses fails the stream alone.
     fn flush_held(&mut self, stream: u64) {
         let Some(id) = self.channel_by_stream.get(&stream).copied() else {
             return;
@@ -985,7 +1112,7 @@ impl Framing {
             self.held.remove(&stream);
         }
         if left <= LOW_WATER && self.full.remove(&stream) {
-            self.pieces.push_back(Piece {
+            self.push_piece(Piece {
                 stream,
                 bytes: Vec::new(),
                 fields: false,
@@ -1050,6 +1177,9 @@ impl Framing {
     }
 
     fn event(&mut self, e: Event) {
+        if self.failed.is_some() {
+            return;
+        }
         match e {
             Event::IceConnectionStateChange(s) => {
                 self.ice = s;
@@ -1094,7 +1224,7 @@ impl Framing {
                     );
                     return;
                 }
-                self.pieces.push_back(Piece {
+                self.push_piece(Piece {
                     stream: s,
                     bytes: d.data,
                     fields: false,
@@ -1112,7 +1242,7 @@ impl Framing {
                     if self.failed_sids.remove(&s) {
                         return;
                     }
-                    self.pieces.push_back(Piece {
+                    self.push_piece(Piece {
                         stream: s,
                         bytes: Vec::new(),
                         fields: false,
@@ -1151,7 +1281,7 @@ impl Framing {
                     .copied()
                     .filter(|s| !self.failed_sids.contains(s))
                 {
-                    self.pieces.push_back(Piece {
+                    self.push_piece(Piece {
                         stream: s,
                         bytes: d.data.to_vec(),
                         fields: false,
@@ -1219,15 +1349,6 @@ impl Framing {
     #[must_use]
     pub fn ended(&self) -> bool {
         self.ended
-    }
-
-    /// The messages held for `stream`, `(text, bytes)` each, in order: what a test reads of the
-    #[cfg(test)]
-    pub(crate) fn held(&self, stream: u64) -> Vec<(bool, Vec<u8>)> {
-        self.held
-            .get(&stream)
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
     }
 
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).

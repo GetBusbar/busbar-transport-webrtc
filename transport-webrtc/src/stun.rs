@@ -2,6 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The few facts of a connectivity check the framer reads itself (RFC 8489 framing, RFC 8445
+//! attributes): its class, its transaction id and whether it nominates. Integrity is the media
+//! stack's ICE agent's to judge (it answers only a check whose MESSAGE-INTEGRITY verifies), and the
+//! host's, independently. The one verdict judged here is the dialling end's: whether a Binding
+//! success it acts on carries a MESSAGE-INTEGRITY that verifies ([`integrity_holds`]), since the
+//! stack's own verdict on a response is not observable.
 
 /// The STUN magic cookie.
 const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
@@ -13,6 +18,8 @@ const BINDING_SUCCESS: u16 = 0x0101;
 const USE_CANDIDATE: u16 = 0x0025;
 /// MESSAGE-INTEGRITY (RFC 8489 §14.5): an HMAC-SHA1, 20 bytes.
 const MESSAGE_INTEGRITY: u16 = 0x0008;
+/// MESSAGE-INTEGRITY-SHA256 (RFC 8489 §14.6).
+const MESSAGE_INTEGRITY_SHA256: u16 = 0x001c;
 
 const HEADER_LEN: usize = 20;
 const TRANSACTION_ID_LEN: usize = 12;
@@ -49,6 +56,8 @@ pub enum Check {
 }
 
 /// Read `datagram` as a Binding request or success response; `None` for anything else, a message
+/// RFC 8489 §5 does not frame among it (a length that is no multiple of 4, or not the datagram's
+/// size less the header).
 #[must_use]
 pub fn read(datagram: &[u8]) -> Option<Check> {
     let head = datagram.get(..HEADER_LEN)?;
@@ -67,7 +76,11 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
         BINDING_REQUEST => Some(Check::Request {
             txid,
 
-            nominates: attributes(body).any(|a| a == (USE_CANDIDATE, 0)),
+            nominates: attributes(body)
+                .take_while(|(kind, _)| {
+                    !matches!(*kind, MESSAGE_INTEGRITY | MESSAGE_INTEGRITY_SHA256)
+                })
+                .any(|a| a == (USE_CANDIDATE, 0)),
         }),
         BINDING_SUCCESS => Some(Check::Success { txid }),
         _ => None,
@@ -75,6 +88,7 @@ pub fn read(datagram: &[u8]) -> Option<Check> {
 }
 
 /// The attributes of a STUN body, `(type, value length)` each, in order, stopping at the first
+/// malformed one.
 fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
     let mut at = 0_usize;
     std::iter::from_fn(move || {
@@ -91,6 +105,8 @@ fn attributes(body: &[u8]) -> impl Iterator<Item = (u16, usize)> + '_ {
 }
 
 /// Whether `datagram`'s MESSAGE-INTEGRITY verifies under the short-term credential `key` (RFC 8489
+/// §14.5: HMAC-SHA1 over the message up to the attribute, its header's length counting through
+/// it). `false` for a message without one.
 #[must_use]
 pub fn integrity_holds(datagram: &[u8], key: &[u8]) -> bool {
     let Some(head) = datagram.get(..HEADER_LEN) else {

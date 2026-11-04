@@ -2,6 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `webrtc` framer, driven through its own table the way the host drives it: the ops it does
+//! not serve refused in the role-stub words, its settings, an unknown lease, an op with no open
+//! instance, and the op facts its tail states (sibling alignment D16: the kind's door tests, in the
+//! logic crate's `tests/door.rs`). (An integration test, so the crate itself stays
+//! `#![forbid(unsafe_code)]`: driving a raw table is the host's side, and needs it.) The framer's
+//! datagram behaviour is driven through the one loader by the plugin crate's `tests/door_ops.rs`
+//! and `tests/datagram_witness.rs`, and by busbar's suite (`tests/conformance.rs` there).
 
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
@@ -254,4 +260,89 @@ fn an_op_with_no_open_instance_fails_naming_the_op() {
 fn the_tails_op_facts_are_the_ops_the_door_serves() {
     assert_eq!(tail().facts, FACT_ACCEPTS | FACT_DIALS);
     assert_eq!(tail().facts & (FACT_DETACHES | FACT_ADOPTS), 0);
+}
+
+#[test]
+fn finish_retains_its_token_until_pending_output_is_drained() {
+    use busbar_contract::abi::mechanism::call::{AbiStr, Field};
+    use busbar_contract::abi::transport::{
+        ConnFacts, DatagramLane, FramePiece, FramerSink, SIDE_DIAL, YIELD_ENDED, YIELD_MORE,
+    };
+    let inst = open();
+    let mut facts: ConnFacts = z();
+    facts.size = size_of::<ConnFacts>() as u32;
+    facts.local_certificate = AbiStr::of_bytes(b"public certificate");
+    let mut lane: DatagramLane = z();
+    lane.size = size_of::<DatagramLane>() as u32;
+    lane.local_addr = AbiStr::of_bytes(b"198.51.100.1:40000");
+    let fields = [Field {
+        name: AbiStr::of_bytes(b"channel"),
+        value: AbiStr::of_bytes(b"events"),
+    }];
+    let mut begin: BeginIn = z();
+    begin.side = SIDE_DIAL;
+    begin.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
+    begin.facts = &facts;
+    begin.lane = &lane;
+    begin.fields = fields.as_ptr();
+    begin.fields_len = fields.len();
+    begin.sink.now_monotonic_ns = 1;
+    let mut begun: FramerOut = z();
+    assert_eq!(
+        call(ops().begin, inst, &mut begin, &mut begun, slot::BEGIN),
+        Outcome::Ready
+    );
+    assert_ne!(begun.yielded.flags & YIELD_MORE, 0);
+    let mut bytes = [0_u8; 32];
+    let mut piece: FramePiece = z();
+    let mut sink: FramerSink = z();
+    sink.frame = bytes.as_mut_ptr();
+    sink.frame_cap = bytes.len();
+    sink.pieces = &mut piece;
+    sink.pieces_cap = 1;
+    sink.now_monotonic_ns = 1;
+    let mut finish: FinishIn = z();
+    finish.framing = begun.framing;
+    finish.lane = &lane;
+    finish.sink = sink;
+    let mut description = Vec::new();
+    let mut completed = false;
+    for attempt in 0..128 {
+        let mut out: FramerOut = z();
+        assert_eq!(
+            call(ops().finish, inst, &mut finish, &mut out, slot::FINISH),
+            Outcome::Ready,
+            "{}",
+            said(&out)
+        );
+        description.extend_from_slice(&bytes[..out.yielded.frame_len as usize]);
+        if attempt == 0 {
+            assert_ne!(
+                out.yielded.flags & YIELD_MORE,
+                0,
+                "the SDP exceeds one small sink"
+            );
+            assert_eq!(out.yielded.flags & YIELD_ENDED, 0);
+        }
+        if out.yielded.flags & YIELD_MORE == 0 {
+            assert_ne!(out.yielded.flags & YIELD_ENDED, 0);
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "finish eventually drains");
+    let description = String::from_utf8(description).unwrap();
+    assert_eq!(description.matches("v=0").count(), 1);
+    assert!(description.contains("m=application"));
+    let mut out: FramerOut = z();
+    assert_eq!(
+        call(ops().finish, inst, &mut finish, &mut out, slot::FINISH),
+        Outcome::Failed
+    );
+    let mut close: InHead = z();
+    let mut out: OutHead = z();
+    assert_eq!(
+        call(ops().head.close, inst, &mut close, &mut out, life::CLOSE),
+        Outcome::Ready
+    );
 }

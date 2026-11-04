@@ -61,6 +61,7 @@ fn findings(path: &str, text: &str) -> Vec<String> {
 }
 
 /// Every shipped source file under `dir/src` (the crate's own `src/tests/` aside: tests name
+/// what they test) and the crate's manifest, as `(path, text)`.
 fn shipped(dir: &Path) -> Vec<(String, String)> {
     fn walk(d: &Path, rel: &str, out: &mut Vec<(String, String)>) {
         for e in std::fs::read_dir(d).expect("readable") {

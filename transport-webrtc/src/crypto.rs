@@ -21,12 +21,14 @@ use zeroize::{Zeroize as _, Zeroizing};
 pub struct Ring;
 
 /// The crypto provider every framing's media stack runs on (its handshake slot is the host shim's,
+/// [`crate::shim::provider`]).
 #[must_use]
 pub fn provider() -> CryptoProvider {
     crate::shim::provider(&Ring)
 }
 
 /// The most AAD bytes an open gathers on the stack (an SRTP header with its extensions, an SRTCP
+/// header and index); more spill to the heap.
 const AAD_ON_STACK: usize = 1024;
 
 const RTP_VERSION_MASK: u8 = 0xc0;
@@ -77,6 +79,8 @@ impl SrtpProvider for Ring {
 }
 
 /// One AES block of the SRTP key derivation: `output[..16] = AES_key(input[..16])`. A key of the
+/// wrong length, or a block shorter than 16 bytes, leaves `output` zeroed (the derived key is then
+/// useless and every packet fails authentication; nothing panics across the door).
 fn ecb_round<C: KeyInit + BlockEncrypt>(key: &[u8], input: &[u8], output: &mut [u8]) {
     output.iter_mut().for_each(|b| *b = 0);
     let (Ok(cipher), Some(block), true) =
@@ -144,6 +148,8 @@ impl ReplayWindow {
 }
 
 /// str0m 0.24.1 gives RTP one AAD slice and SRTCP two: [header+index, empty]
+/// for encryption, or [whole report, index] for authentication only. Keep the
+/// two modes in the same SSRC/index space. A 12-byte RTP header is not SRTCP.
 fn srtcp_index(aads: &[&[u8]]) -> Result<Option<(u32, u32)>, CryptoError> {
     let [head, tail] = aads else {
         return Ok(None);
@@ -248,6 +254,7 @@ impl Gcm {
     }
 
     /// `input = ciphertext || tag`; the plaintext into `output`, its length answered. Opened in
+    /// place in `output` with the AAD gathered on the stack: no allocation per packet.
     fn open(
         &mut self,
         iv: &[u8; 12],

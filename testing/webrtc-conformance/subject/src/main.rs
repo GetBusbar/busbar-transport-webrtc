@@ -2,26 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE BROWSER CELL'S SUBJECT: busbar's terminating path for a datagram association, answering a
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+//! headless browser's offer and echoing what it sends.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -54,6 +38,7 @@ enum Break {
     None,
     Channel,
     Media,
+    Close,
 }
 
 /// The `webrtc` door, admitted through the one dispatcher under its row's name and opened.
@@ -85,6 +70,7 @@ struct Port {
     /// `(association, stream)` -> the stream is a line (else a channel).
     lines: HashMap<(u64, u64), bool>,
     broken: Break,
+    closed_channels: HashSet<u64>,
 }
 
 impl Port {
@@ -97,6 +83,13 @@ impl Port {
     /// Echo what association `id` yielded.
     fn echo(&mut self, id: u64, pieces: Vec<Got>, now: Instant) {
         for g in pieces {
+            if g.end {
+                self.lines.remove(&(id, g.stream));
+                if self.broken != Break::Close {
+                    self.closed_channels.insert(id);
+                }
+                continue;
+            }
             if g.fields {
                 let line = matches!(stream_head(&g.bytes), Some(StreamHead::Line { .. }));
                 self.lines.insert((id, g.stream), line);
@@ -107,7 +100,7 @@ impl Port {
             }
             let line = self.lines.get(&(id, g.stream)).copied().unwrap_or(false);
             let skip = match self.broken {
-                Break::None => false,
+                Break::None | Break::Close => false,
                 Break::Channel => !line,
                 Break::Media => line,
             };
@@ -115,7 +108,6 @@ impl Port {
                 continue;
             }
             if let Some(f) = self.assocs.get_mut(id) {
-
                 if let Err(e) = f.emit(g.stream, &g.bytes, g.end_of_frame, g.text, now) {
                     eprintln!(
                         "webrtc-conformance-subject: association {id} refused an echo on stream {}: {e}",
@@ -208,9 +200,16 @@ async fn request(s: &mut tokio::net::TcpStream) -> Option<(String, String, Vec<u
     Some((method, path, body))
 }
 
-async fn respond(s: &mut tokio::net::TcpStream, status: &str, kind: &str, body: &[u8]) {
+async fn respond(
+    s: &mut tokio::net::TcpStream,
+    status: &str,
+    kind: &str,
+    body: &[u8],
+    location: Option<&str>,
+) {
+    let location = location.map_or_else(String::new, |value| format!("location: {value}\r\n"));
     let head = format!(
-        "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\n{location}connection: close\r\n\r\n",
         body.len()
     );
     let _ = s.write_all(head.as_bytes()).await;
@@ -219,11 +218,12 @@ async fn respond(s: &mut tokio::net::TcpStream, status: &str, kind: &str, body: 
 }
 
 /// `POST /offer`: the accepting association, settled by the browser's offer, joins the port; the
+/// answer is the framer's own description.
 fn answer(
     port: &Rc<RefCell<Port>>,
     framer: &Arc<dyn FramerDoor>,
     offer: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, u64), String> {
     let cert =
         Arc::new(busbar_core_connector::dtls::SessionCert::mint().map_err(|e| format!("{e:?}"))?);
     let local = port.borrow().port.local_addr();
@@ -240,7 +240,7 @@ fn answer(
     let mut p = port.borrow_mut();
     let id = p.assocs.add(f).map_err(|e| format!("{e:?}"))?;
     p.echo(id, y.pieces, now);
-    Ok(description)
+    Ok((description, id))
 }
 
 fn main() {
@@ -251,6 +251,7 @@ fn main() {
     {
         Some("channel") => Break::Channel,
         Some("media") => Break::Media,
+        Some("close") => Break::Close,
         _ => Break::None,
     };
     let host = std::env::var("WEBRTC_SUBJECT_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
@@ -270,6 +271,7 @@ fn main() {
             assocs: Associations::new(),
             lines: HashMap::new(),
             broken,
+            closed_channels: HashSet::new(),
         }));
         tokio::task::spawn_local(serve_port(Rc::clone(&port)));
         let http = tokio::net::TcpListener::bind(format!("{host}:0"))
@@ -293,19 +295,49 @@ fn main() {
                             "200 OK",
                             "text/html; charset=utf-8",
                             PAGE.as_bytes(),
+                            None,
                         )
                         .await;
                     }
                     Some((m, p, body)) if m == "POST" && p == "/offer" => {
                         match answer(&port, &framer, &body) {
-                            Ok(d) => respond(&mut s, "201 Created", "application/sdp", &d).await,
+                            Ok((d, id)) => {
+                                respond(
+                                    &mut s,
+                                    "201 Created",
+                                    "application/sdp",
+                                    &d,
+                                    Some(&format!("/closed/{id}")),
+                                )
+                                .await
+                            }
                             Err(why) => {
-                                respond(&mut s, "400 Bad Request", "text/plain", why.as_bytes())
-                                    .await
+                                respond(
+                                    &mut s,
+                                    "400 Bad Request",
+                                    "text/plain",
+                                    why.as_bytes(),
+                                    None,
+                                )
+                                .await
                             }
                         }
                     }
-                    Some(_) => respond(&mut s, "404 Not Found", "text/plain", b"").await,
+                    Some((m, p, _)) if m == "GET" && p.starts_with("/closed/") => {
+                        let closed = p
+                            .strip_prefix("/closed/")
+                            .and_then(|id| id.parse::<u64>().ok())
+                            .is_some_and(|id| port.borrow_mut().closed_channels.remove(&id));
+                        respond(
+                            &mut s,
+                            if closed { "200 OK" } else { "409 Conflict" },
+                            "text/plain",
+                            b"",
+                            None,
+                        )
+                        .await;
+                    }
+                    Some(_) => respond(&mut s, "404 Not Found", "text/plain", b"", None).await,
                     None => {}
                 }
             });

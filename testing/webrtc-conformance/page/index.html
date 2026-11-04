@@ -12,7 +12,7 @@
     channel-binary    one 1000-byte binary message echoed back whole
     media-round-trip  at least 50 audio packets came back on the line (SRTP both ways)
     media-codec       the line carries Opus
-    close             the connection closes cleanly
+    close             the subject observes the data-channel END after browser close
 
   `runCell()` grades the subject; `runControl()` grades two of the browser's own connections
   against each other, the known-good peer that proves the page itself can pass.
@@ -138,8 +138,14 @@ window.runCell = async function () {
     cells["answer"] = ok("201");
     await pc.setRemoteDescription({ type: "answer", sdp: answer });
     await gradeEcho(pc, dc, cells);
+    const receipt = r.headers.get("location");
+    dc.close();
+    const closed = receipt && await waitFor(async () => {
+      const response = await fetch(receipt, { cache: "no-store" });
+      return response.status === 200;
+    }, 10000);
+    cells["close"] = closed ? ok("subject observed channel END") : bad("subject did not observe channel END");
     pc.close();
-    cells["close"] = pc.connectionState === "closed" ? ok("closed") : bad(pc.connectionState);
   } catch (e) {
     cells["page"] = bad(e && e.stack ? e.stack : e);
   }
@@ -155,8 +161,10 @@ window.runControl = async function () {
     const b = new RTCPeerConnection();
     a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate);
     b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate);
+    let remoteClosed = false;
     b.ondatachannel = (e) => {
       const ch = e.channel;
+      ch.onclose = () => { remoteClosed = true; };
       ch.binaryType = "arraybuffer";
       ch.onmessage = (m) => ch.send(m.data);
     };
@@ -183,9 +191,11 @@ window.runControl = async function () {
     await a.setRemoteDescription(b.localDescription);
     cells["answer"] = ok("local");
     await gradeEcho(a, dc, cells);
+    dc.close();
+    const closed = await waitFor(() => remoteClosed, 10000);
+    cells["close"] = closed ? ok("far peer observed channel close") : bad("far peer did not observe channel close");
     a.close();
     b.close();
-    cells["close"] = a.connectionState === "closed" ? ok("closed") : bad(a.connectionState);
   } catch (e) {
     cells["page"] = bad(e && e.stack ? e.stack : e);
   }

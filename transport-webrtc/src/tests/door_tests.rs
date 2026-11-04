@@ -16,6 +16,9 @@ fn piece(bytes: &[u8], fields: bool, text: bool, end: bool) -> Piece {
 }
 
 /// A CLOSED DATA CHANNEL ENDS ITS STREAM BY FLAG (the transport contract: "streams end by flag";
+/// an empty piece without `PIECE_END` is an empty message). The end is its own empty piece with
+/// `PIECE_END` and `PIECE_END_OF_FRAME`, and never text, a field block, a failure or a continuation,
+/// which `check_framer` refuses beside an end.
 #[test]
 fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
     let end = piece(b"", false, false, true);
@@ -37,6 +40,7 @@ fn a_closed_channel_is_the_streams_end_by_flag_never_an_empty_message() {
 }
 
 /// The framer reads no setting: empty and `{}` are its settings; a key, or a blob that is no JSON
+/// object, is refused at validate, open and refresh, in the transport family's words.
 #[test]
 fn a_setting_the_framer_does_not_read_is_refused() {
     for ok in [&b""[..], b"{}"] {
@@ -64,6 +68,7 @@ fn a_setting_the_framer_does_not_read_is_refused() {
 }
 
 /// The other pieces keep the bits they had: a message's text, a field block and its continuation,
+/// and the frame's end only on the piece that carries its last byte.
 #[test]
 fn messages_and_field_blocks_keep_their_bits() {
     let text = piece(b"{\"type\":\"hello\"}", false, true, false);
@@ -84,6 +89,7 @@ fn messages_and_field_blocks_keep_their_bits() {
 }
 
 /// One association's state over a dialling framing that offers channel `events` (stream 1), not
+/// yet open: what the host emits on it is held.
 fn held1() -> Held1 {
     let now = Instant::now();
     let opening = Opening {
@@ -113,6 +119,8 @@ fn an_empty_message_from_the_host_reaches_the_framing() {
 }
 
 /// EMIT_TEXT IS READ ON THE CALL THAT COMPLETES THE FRAME (the contract's `EmitIn::flags`;
+/// codeaudit door.rs:651): an earlier piece's flag says nothing. RED before the fix: the bit was
+/// OR-ed across every piece, so a message the completing call called binary went as text.
 #[test]
 fn the_text_bit_is_the_completing_calls() {
     let mut h = held1();
@@ -159,7 +167,7 @@ fn a_poisoned_association_is_never_served_torn() {
     })
     .join();
     assert!(unwound.is_err() && slot.is_poisoned());
-    assert!(hold(&slot).is_none(), "the torn state is not served");
+    assert!(hold_torn(&slot).0.is_none(), "the torn state is not served");
 }
 
 /// Failure and writable pieces retain their respective flags.

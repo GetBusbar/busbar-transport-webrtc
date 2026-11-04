@@ -2,6 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Two framings, a dialling one and an accepting one, over a simulated host: the host assigns path
+//! numbers, binds what a framing asks for (these tests judge the FRAMER's guards; the host's own
+//! round-trip proof is the connector's, `busbar-core-connector/src/dtls/tests.rs`), stands in for
+//! the secure layer (secured routes arrive as the far side's secured lane) and presents one keying
+//! material to both ends once it marks them verified.
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
@@ -66,7 +70,7 @@ impl End {
             .iter()
             .position(|p| p.stream == DESCRIPTION)
             .expect("a description");
-        self.pieces.remove(at).bytes
+        std::mem::take(&mut self.pieces.remove(at).bytes)
     }
 
     fn collect(&mut self) {
@@ -585,6 +589,8 @@ fn a_dialling_framing_with_nothing_to_offer_is_refused() {
 }
 
 /// A CHANNEL DELIVERS IN ORDER (an ordered data channel; the contract's stream is a sequence of
+/// frames). A message the media stack has no room for is held, and a smaller one written after it
+/// never overtakes it: it queues behind.
 #[test]
 fn a_held_message_is_never_overtaken() {
     let (mut dial, mut accept, mut now) = connected();
@@ -619,6 +625,8 @@ fn a_held_message_is_never_overtaken() {
 }
 
 /// A FAILED STREAM FAILS ALONE (the transport contract: "A failed stream fails alone: its siblings
+/// on the connection carry on"). A host that keeps emitting on a channel past what the framer
+/// holds for it costs that channel, never the association.
 #[test]
 fn one_channels_overflow_never_fails_the_association() {
     let now = Instant::now();
@@ -647,6 +655,7 @@ fn one_channels_overflow_never_fails_the_association() {
 }
 
 /// THE RENDEZVOUS TERMS ARE BOUNDED: a far end's description that advertises any number of
+/// candidates yields terms of a bounded size, so they always fit a host's frame buffer whole.
 #[test]
 fn a_far_ends_candidates_are_read_up_to_a_bound() {
     let mut d = String::from(
@@ -1282,4 +1291,149 @@ fn a_mixed_offer_marks_its_opening_pending_until_the_channel_is_known() {
         && p.bytes
             .windows(b"opening-pending: 0".len())
             .any(|s| s == b"opening-pending: 0")));
+}
+
+#[test]
+fn rendezvous_terms_debug_redacts_both_ice_passwords() {
+    let terms = Terms {
+        initiates: true,
+        local_user: "local-user".into(),
+        local_secret: Zeroizing::new("local-password-must-not-appear".into()),
+        remote_user: "remote-user".into(),
+        remote_secret: Zeroizing::new("remote-password-must-not-appear".into()),
+        peer_fingerprint: [0; 32],
+        candidates: Vec::new(),
+    };
+    for rendered in [format!("{terms:?}"), format!("{terms:#?}")] {
+        assert!(!rendered.contains(terms.local_secret.as_str()));
+        assert!(!rendered.contains(terms.remote_secret.as_str()));
+        assert!(rendered.contains("local-user"));
+        assert!(rendered.contains("remote-user"));
+        assert_eq!(rendered.matches("<redacted>").count(), 2);
+    }
+}
+
+impl Framing {
+    /// The messages held for `stream`, `(text, bytes)` each, in order: what a test reads of the
+    /// queue.
+    pub(crate) fn held(&self, stream: u64) -> Vec<(bool, Vec<u8>)> {
+        self.held
+            .get(&stream)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn unauthenticated_trailing_use_candidate_never_nominates() {
+    let secret = b"test-ice-secret";
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret);
+    for authenticated_nomination in [false, true] {
+        let mut attrs = Vec::new();
+        if authenticated_nomination {
+            attrs.extend_from_slice(&[0, 0x25, 0, 0]);
+        }
+        let mut message = stun_message(1, (attrs.len() + 24) as u16, &attrs);
+        let mac = ring::hmac::sign(&key, &message);
+        message.extend_from_slice(&[0, 8, 0, 20]);
+        message.extend_from_slice(mac.as_ref());
+        assert!(stun::integrity_holds(&message, secret));
+        message.extend_from_slice(&[0, 0x25, 0, 0]);
+        let length = (message.len() - 20) as u16;
+        message[2..4].copy_from_slice(&length.to_be_bytes());
+        assert!(stun::integrity_holds(&message, secret));
+        assert_eq!(
+            stun::read(&message),
+            Some(Check::Request {
+                txid: [9; 12],
+                nominates: authenticated_nomination,
+            })
+        );
+    }
+    let mut attrs = vec![0, 0x1c, 0, 32];
+    attrs.extend_from_slice(&[0; 32]);
+    attrs.extend_from_slice(&[0, 0x25, 0, 0]);
+    assert_eq!(
+        stun::read(&stun_message(1, attrs.len() as u16, &attrs)),
+        Some(Check::Request {
+            txid: [9; 12],
+            nominates: false
+        })
+    );
+}
+
+#[test]
+fn media_transport_parameters_override_session_defaults_on_both_peers() {
+    fn with_defaults(description: Vec<u8>) -> Vec<u8> {
+        let mut text = String::from_utf8(description).expect("SDP is text");
+        let at = text.find("m=").expect("a media section");
+        text.insert_str(
+            at,
+            &format!("a=ice-ufrag:unusedSessionUser\r\na=ice-pwd:unusedSessionPassword0123456789\r\na=fingerprint:sha-256 {}\r\na=setup:passive\r\n", ["00"; 32].join(":")),
+        );
+        text.into_bytes()
+    }
+    let mut now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    accept
+        .f
+        .rendezvous(&with_defaults(dial.description()), now)
+        .unwrap();
+    dial.f
+        .rendezvous(&with_defaults(accept.description()), now)
+        .unwrap();
+    let (ta, td) = (accept.terms(), dial.terms());
+    assert_eq!(ta.remote_user, td.local_user);
+    assert_eq!(td.remote_user, ta.local_user);
+    assert_eq!(ta.remote_secret, td.local_secret);
+    assert_eq!(td.remote_secret, ta.local_secret);
+    assert_ne!(ta.initiates, td.initiates);
+    assert_eq!(
+        ta.peer_fingerprint.as_slice(),
+        ring::digest::digest(&ring::digest::SHA256, CERT).as_ref()
+    );
+    assert_eq!(td.peer_fingerprint, ta.peer_fingerprint);
+    run(&mut dial, &mut accept, &mut now, 3000);
+    assert_ne!(dial.bound, 0);
+    assert_ne!(accept.bound, 0);
+}
+
+#[test]
+fn path_history_refuses_growth_past_its_capacity() {
+    let now = Instant::now();
+    let mut f = Framing::begin(Side::Accept, CERT, None, &Opening::default(), now).unwrap();
+    for n in 1..=MAX_QUEUED {
+        f.point(n as u32, SocketAddr::from(([192, 0, 2, 1], n as u16)));
+    }
+    assert_eq!(f.paths.len(), MAX_QUEUED);
+    assert!(f.failure().is_none());
+    f.point(1, SocketAddr::from(([192, 0, 2, 2], 1)));
+    assert!(f.failure().is_none(), "existing paths may change addresses");
+    f.datagram(
+        (MAX_QUEUED + 1) as u32,
+        SocketAddr::from(([192, 0, 2, 3], 1)),
+        Lane::Clear,
+        &[0],
+        now,
+    );
+    assert!(f.failure().is_some());
+    assert_eq!(f.paths.len(), MAX_QUEUED);
+    assert_eq!(f.addrs.len(), MAX_QUEUED);
+}
+
+#[test]
+fn channel_control_events_cannot_overrun_the_piece_queue() {
+    let (mut dial, _accept, _now) = connected();
+    let id = *dial.f.channels.keys().next().unwrap();
+    dial.f.pieces.clear();
+    for _ in 0..MAX_QUEUED / 2 {
+        dial.f.event(Event::ChannelOpen(id, "events".into()));
+        dial.f.event(Event::ChannelClose(id));
+    }
+    assert_eq!(dial.f.pieces.len(), MAX_QUEUED);
+    assert!(dial.f.failure().is_none());
+    dial.f.event(Event::ChannelOpen(id, "events".into()));
+    assert!(dial.f.failure().is_some());
+    assert_eq!(dial.f.pieces.len(), MAX_QUEUED);
 }

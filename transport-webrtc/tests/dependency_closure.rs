@@ -84,6 +84,7 @@ const CRYPTO_AES_LINES: [&str; 3] = [
 ];
 
 /// `Err` naming the first source line that names `aes` (or its block traits) outside the SRTP key
+/// derivation. `files` are `(path relative to src, text)`.
 fn source_confined(files: &[(String, String)]) -> Result<(), String> {
     let mut rounds = 0;
     for (path, text) in files {

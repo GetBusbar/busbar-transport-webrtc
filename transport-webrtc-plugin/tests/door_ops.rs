@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DOOR'S OWN DUTIES THROUGH THE TABLE: what `begin`, `ingest`, `emit` and `timer` answer into
+//! host buffers of a size the test chooses, driven through the one loader as the host drives them
+//! (the linked door; `datagram_witness.rs` holds the dropped-in one to the same transcript). The
+//! far end, where one is needed, is a framing of this crate's own, driven directly.
 
 use std::time::{Duration, Instant};
 
@@ -356,7 +359,7 @@ fn a_datagram_larger_than_the_whole_wire_buffer_fails_the_framing() {
     )
     .expect("begins");
     far.rendezvous(&offer, now).expect("the offer is taken");
-    let answer = far.next_piece().expect("the answer").bytes;
+    let answer = std::mem::take(&mut far.next_piece().expect("the answer").bytes);
     host.path(1, FAR);
     let mut last = ingest(&p, &mut host, token, LANE_RENDEZVOUS, &answer);
     for step in 0..200 {
@@ -494,6 +497,7 @@ fn a_failing_op_racing_finish_never_deadlocks() {
 }
 
 /// EVERY REFUSAL OPENS WITH ITS OP (sibling alignment D7; AUDIT-RULES `<op>: <reason>`): an op on
+/// a framing that is no more, and a framing error forwarded from an op, say which op answered.
 #[test]
 fn every_refusal_opens_with_its_op() {
     let p = door();
@@ -517,5 +521,58 @@ fn every_refusal_opens_with_its_op() {
     assert_eq!(
         ingest(&p, &mut host, token, LANE_RENDEZVOUS, b"\xff").why,
         "ingest: a description that is not text"
+    );
+}
+
+#[test]
+fn finish_reports_a_datagram_that_cannot_fit_the_wire_sink() {
+    let p = door();
+    let mut host = Host::new(16 * 1024, 16 * 1024);
+    let opened = begin(&p, &mut host, &[b"events"]);
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let offer = opened
+        .pieces
+        .iter()
+        .find(|piece| piece.0 == DESCRIPTION)
+        .unwrap()
+        .2
+        .clone();
+    let now = Instant::now();
+    let mut far = Framing::begin(
+        Side::Accept,
+        CERT,
+        FAR.parse().ok(),
+        &Opening::default(),
+        now,
+    )
+    .unwrap();
+    far.rendezvous(&offer, now).unwrap();
+    let answer = std::mem::take(&mut far.next_piece().unwrap().bytes);
+    host.path(1, FAR);
+    host.routes.clear();
+    let mut last = ingest(&p, &mut host, opened.framing, LANE_RENDEZVOUS, &answer);
+    for _ in 0..200 {
+        assert_eq!(last.outcome, Outcome::Ready, "{last:?}");
+        if last.flags & YIELD_MORE != 0 {
+            break;
+        }
+        host.now_ns += 50_000_000;
+        last = timer(&p, &mut host, opened.framing);
+    }
+    assert_ne!(
+        last.flags & YIELD_MORE,
+        0,
+        "a route is waiting for host capacity"
+    );
+    host.wire.clear();
+    let closed = finish(&p, &mut host, opened.framing);
+    assert_eq!(closed.outcome, Outcome::Failed);
+    assert_eq!(
+        closed.why,
+        "finish: a datagram the media stack sends does not fit the host's wire buffer"
+    );
+    assert_eq!(
+        timer(&p, &mut host, opened.framing).why,
+        "timer: no such framing"
     );
 }

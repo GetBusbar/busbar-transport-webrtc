@@ -45,6 +45,7 @@ status_of() {
 selftest() {
   echo "== judgement selftest =="
   node "$DRIVE" --selftest
+  node --test "$ROOT/page/close_test.mjs"
   local tmp
   tmp="$(mktemp -d)"
   node "$DRIVE" --judge "$FIXTURES/good.txt" --armed true --out "$tmp/good.json"
@@ -139,6 +140,22 @@ case "$mode" in
       console.log("webrtc-conformance: negative-control " + (ok ? "bites" : "DOES NOT BITE") + ": " + v.reason);
       process.exit(ok ? 0 : 1);
     ' "$REPORTS_DIR/negative-control/verdict.json"
+    stop_subject
+    SUBJECT_PID=""
+    bash "$0" --negative-close-control
+    ;;
+  --negative-close-control)
+    start_subject --break close
+    rc=0
+    drive cell negative-close-control || rc=$?
+    [ "$rc" -eq 3 ] && exit 3
+    node -e '
+      const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      const ok = v.status === "fail" && ["chromium", "firefox"].every((b) =>
+        v.browsers[b]?.close?.pass === false && v.browsers[b]?.["channel-text"]?.pass === true);
+      console.log("webrtc-conformance: negative-close-control " + (ok ? "bites" : "DOES NOT BITE"));
+      process.exit(ok ? 0 : 1);
+    ' "$REPORTS_DIR/negative-close-control/verdict.json"
     ;;
   --subject)
     if ! start_subject; then
@@ -150,7 +167,7 @@ case "$mode" in
     drive cell subject
     ;;
   *)
-    echo "usage: $0 --selftest|--subject-arm|--install|--control|--negative-control|--subject" >&2
+    echo "usage: $0 --selftest|--subject-arm|--install|--control|--negative-control|--negative-close-control|--subject" >&2
     exit 2
     ;;
 esac

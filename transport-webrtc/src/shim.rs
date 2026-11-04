@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host shim: what the media stack sees in place of its own DTLS (DTLS runs in the host's
+//! secure layer; the framer holds no DTLS state).
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -39,6 +40,7 @@ impl DtlsProvider for Host {
 }
 
 /// The media stack's crypto provider: every primitive on `ring` ([`crate::crypto::Ring`]), the
+/// DTLS factory the host shim's.
 #[must_use]
 pub fn provider(ring: &'static crate::crypto::Ring) -> CryptoProvider {
     CryptoProvider {
@@ -50,6 +52,9 @@ pub fn provider(ring: &'static crate::crypto::Ring) -> CryptoProvider {
 }
 
 /// `config` presenting the host's PUBLIC certificate (its fingerprint is what this end's description
+/// states; there is no private key, nothing here signs), with the media stack's own fingerprint
+/// check off: the host's secure layer verified the far end's certificate, and the media stack never
+/// sees one.
 #[must_use]
 pub fn present(config: RtcConfig, certificate: &[u8]) -> RtcConfig {
     config
@@ -70,6 +75,7 @@ const OPENED: u8 = 22;
 const SEAL: u8 = 23;
 
 /// The keying material's length under each admitted profile (RFC 7714 §12: two master keys and two
+/// 12-byte master salts).
 const KEYING_LEN_128: usize = 2 * 16 + 2 * 12;
 /// `SRTP_AEAD_AES_256_GCM`'s.
 const KEYING_LEN_256: usize = 2 * 32 + 2 * 12;
@@ -82,6 +88,8 @@ pub const KEYING_LENGTH_REFUSED: &str =
 pub const CONNECTED_FRAME: [u8; 1] = [CONNECTED];
 
 /// Whether `datagram` lies in the RFC 7983 range the media stack hands its handshake slot. A far
+/// end's datagram in it never reaches the stack: the host's secure layer keeps every such record,
+/// and that range is the framer's own line to its shim.
 #[must_use]
 pub fn is_relay_range(datagram: &[u8]) -> bool {
     matches!(datagram.first(), Some(20..=63))
@@ -91,6 +99,7 @@ pub fn is_relay_range(datagram: &[u8]) -> bool {
 pub const PROFILE_REFUSED: &str = "the keying material's protection profile is not AEAD-AES-GCM";
 
 /// THE ONE TABLE of admitted protection profiles: the profile whose registry code is `code`, and
+/// its keying material's length, for `material` of that length.
 fn admitted(code: u32, material: &[u8]) -> Result<(SrtpProfile, usize), &'static str> {
     /// `SRTP_AES128_CM_HMAC_SHA1_80` and `_32` (RFC 5764 §4.1.2).
     const AES_CM: [u32; 2] = [0x0001, 0x0002];
@@ -107,6 +116,7 @@ fn admitted(code: u32, material: &[u8]) -> Result<(SrtpProfile, usize), &'static
 }
 
 /// The datagram that hands the shim `material`, exported under the protection profile whose
+/// registry code is `profile`. AEAD-AES-GCM only, at its profile's length; it is zeroed on drop.
 pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>, &'static str> {
     let (_, len) = admitted(profile, material)?;
     let mut frame = Zeroizing::new(Vec::with_capacity(2 + len));
@@ -125,6 +135,7 @@ pub fn is_keying(frame: &[u8]) -> bool {
 }
 
 /// Write into `frame` (a buffer the framer reuses, zeroed between uses) the datagram that hands
+/// the shim `plaintext`.
 pub fn opened_frame(frame: &mut Zeroizing<Vec<u8>>, plaintext: &[u8]) {
     frame.zeroize();
     frame.push(OPENED);
@@ -132,6 +143,7 @@ pub fn opened_frame(frame: &mut Zeroizing<Vec<u8>>, plaintext: &[u8]) {
 }
 
 /// The plaintext to seal, when `datagram` (one the media stack transmits) is the shim's; the
+/// datagram back otherwise.
 pub fn sealed(mut datagram: Vec<u8>) -> Result<Vec<u8>, Vec<u8>> {
     if datagram.first() == Some(&SEAL) {
         datagram.remove(0);
@@ -213,6 +225,8 @@ impl Shim {
     }
 
     /// The host's secure layer exported `material` under the protection profile whose registry code
+    /// is `profile`. AEAD-AES-GCM only, at its profile's length: anything else is refused and
+    /// nothing of the material is held.
     pub fn keyed(&self, material: &[u8], profile: u32) -> Result<(), &'static str> {
         let (profile, _) = admitted(profile, material)?;
         let material = Zeroizing::new(material.to_vec());

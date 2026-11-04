@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE `webrtc` DOOR: this transport as a DATAGRAM FRAMER on the transport kind's table
+//! (`busbar_contract::abi::transport`, its datagram lane `abi::transport::datagram`). Every slot is
+//! a [`SafeSlot`] over the SDK's generic lifecycle: no `unsafe` here.
 
 use core::net::SocketAddr;
 use std::collections::HashMap;
@@ -33,6 +35,8 @@ pub use crate::meta::KEY;
 use crate::meta::TAIL;
 
 /// THE AUTH POINTS THIS DOOR OFFERS: none. An association has no head and the door makes no auth
+/// call, so the record is stated EMPTY (ruling R2): with no record the host would read
+/// `{Head, HeadBody}` and admit a guest line whose auth needs a point no association honours.
 const OFFERED_POINTS: [u8; 4] = 0_u32.to_le_bytes();
 
 busbar_contract::statement_extensions!(
@@ -67,6 +71,8 @@ struct Held1 {
     /// A message being gathered, per stream (whether it is text is its completing call's).
     gathering: HashMap<u64, Vec<u8>>,
     /// A piece split across calls, whether its rest continues a field line an earlier piece
+    /// began, and how many of its bytes are already written (an offset, so a large piece is
+    /// never shifted down once per answer).
     partial: Option<(Piece, bool, usize)>,
 }
 
@@ -131,12 +137,7 @@ impl Framings {
     }
 }
 
-/// The association's lock. A panic that unwound while an op held it left the state torn: the
-fn hold(slot: &Mutex<Option<Held1>>) -> MutexGuard<'_, Option<Held1>> {
-    hold_torn(slot).0
-}
-
-/// [`hold`], and whether this call found the lock poisoned (so the emptied slot is a torn one).
+/// Lock the association, forgetting torn state after a panic and reporting whether it was poisoned.
 fn hold_torn(slot: &Mutex<Option<Held1>>) -> (MutexGuard<'_, Option<Held1>>, bool) {
     match slot.lock() {
         Ok(held) => (held, false),
@@ -194,17 +195,13 @@ fn addr(s: Lent<'_, AbiStr>) -> Option<SocketAddr> {
 }
 
 /// Read the lane's host state into the framing: new paths, the bound path, the verified bit and
+/// the keying-material item. (The host port's address is read once, at `begin`.)
 fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Result<(), String> {
-    let paths = lane
-        .paths()
-        .iter()
-        .map(|p| {
-            addr(p.field(|x| &x.addr))
-                .map(|a| (p.path, a))
-                .ok_or_else(|| format!("the host's path {} names no address", p.path))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    h.f.paths(paths);
+    for p in lane.paths().iter() {
+        let address = addr(p.field(|x| &x.addr))
+            .ok_or_else(|| format!("the host's path {} names no address", p.path))?;
+        h.f.paths([(p.path, address)]);
+    }
     let keying = match lane.keying() {
         Some(k) => {
             check_keying(&k)
@@ -217,6 +214,7 @@ fn host_state(h: &mut Held1, lane: Lent<'_, DatagramLane>, now: Instant) -> Resu
 }
 
 /// Answer into the sink and the lane what the framing owes: routes (bytes in `wire`), pieces (bytes
+/// in `frame`), the rendezvous terms, one path request, the deadline, and the flags.
 fn answer(
     h: &mut Held1,
     sink: Lent<'_, FramerSink>,
@@ -626,6 +624,7 @@ impl SafeSlot for Emit {
 }
 
 /// One piece of a message for `stream` from the host (`end`: it completes the message), gathered
+/// until its last; the yield flags the call answers besides.
 fn emit(
     h: &mut Held1,
     stream: u64,
@@ -706,7 +705,7 @@ impl SafeSlot for Timer {
     }
 }
 
-/// `finish`: the association closes, its last datagrams answered; the framing is forgotten.
+/// `finish`: close and drain the association, retaining its token until all output is answered.
 pub(crate) struct Finish;
 impl SafeSlot for Finish {
     type In = FinishIn;
@@ -722,19 +721,36 @@ impl SafeSlot for Finish {
             Err(r) => return o.fail(r),
         };
 
-        let slot = s.lock().remove(&i.framing);
-        let Some(mut h) = slot.and_then(|slot| hold(&slot).take()) else {
+        let Some(slot) = s.slot(i.framing) else {
+            return o.fail(Refusal::failed(FINISH.no_framing));
+        };
+        let (mut held, torn) = hold_torn(&slot);
+        let Some(h) = held.as_mut() else {
+            if torn {
+                s.lock().remove(&i.framing);
+                return o.fail(Refusal::failed(FINISH.torn));
+            }
             return o.fail(Refusal::failed(FINISH.no_framing));
         };
         let sink = i.field(|x| &x.sink);
         let now_ns = sink.now_monotonic_ns;
         let now = h.at(now_ns);
-        h.f.finish(now);
-
-        let _ = answer(&mut h, sink, i.lane(), now_ns, &mut o);
-        let flags = o.get().yielded.flags & !(YIELD_MORE | YIELD_HAS_DEADLINE);
+        if !h.f.ended() {
+            h.f.finish(now);
+        }
+        if let Err(why) = answer(h, sink, i.lane(), now_ns, &mut o) {
+            *held = None;
+            s.lock().remove(&i.framing);
+            return o.fail(refused(&FINISH, &why));
+        }
+        let mut flags = o.get().yielded.flags & !YIELD_HAS_DEADLINE;
         o.set(|o| &o.yielded.next_deadline_ns, 0);
-        o.set(|o| &o.yielded.flags, flags | YIELD_ENDED);
+        if flags & YIELD_MORE == 0 {
+            *held = None;
+            s.lock().remove(&i.framing);
+            flags |= YIELD_ENDED;
+        }
+        o.set(|o| &o.yielded.flags, flags);
         Outcome::Ready
     }
 }
@@ -766,6 +782,9 @@ busbar_contract::plugin_door! {
 }
 
 /// The `PIECE_*` bits of one piece of the framing's `p`: `whole` when it carries the last of its
+/// bytes, `continued` when a split field block's earlier piece came first. A closed data
+/// channel is the stream's END: its own empty piece with [`PIECE_END`] and [`PIECE_END_OF_FRAME`]
+/// (the transport contract's "streams end by flag"); an empty piece without it is an empty message.
 fn piece_flags(p: &Piece, continued: bool, whole: bool) -> u16 {
     if p.end {
         return PIECE_END | PIECE_END_OF_FRAME;
