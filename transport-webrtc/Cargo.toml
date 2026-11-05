@@ -36,5 +36,7 @@ aes = { version = "0.8", default-features = false, features = ["zeroize"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
+jsonschema = { workspace = true }
 busbar-contract = { workspace = true, features = ["test-support"] }
 libc = { workspace = true }
