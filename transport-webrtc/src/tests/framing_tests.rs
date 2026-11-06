@@ -714,22 +714,21 @@ fn an_ice_disconnect_holds_the_association_until_it_fails() {
     );
 }
 
-/// A channel message arriving at the queue cap fails its stream with an explanation.
+/// Payload admission leaves room inside the queue cap for the stream's failure.
 #[test]
 fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
     let (mut dial, _accept, _now) = connected();
     let (&id, &stream) = dial.f.channels.iter().next().expect("an open channel");
-    while dial.f.pieces.len() < MAX_QUEUED {
-        dial.f.pieces.push_back(Piece {
-            stream: 99,
-            bytes: vec![0],
-            fields: false,
-            text: false,
-            end: false,
-            failed: false,
-            writable: false,
-        });
+    assert!(dial.f.pieces.is_empty());
+    for _ in 0..MAX_QUEUED - 1 {
+        dial.f
+            .event(Event::ChannelData(str0m::channel::ChannelData {
+                id,
+                binary: true,
+                data: vec![0],
+            }));
     }
+    assert_eq!(dial.f.pieces.len(), MAX_QUEUED - 1);
     dial.f
         .event(Event::ChannelData(str0m::channel::ChannelData {
             id,
@@ -744,6 +743,29 @@ fn a_channel_message_at_the_queue_cap_fails_its_stream_loudly() {
         dial.f.pieces.iter().any(|p| p.stream == stream && p.failed),
         "with its failure piece"
     );
+    assert!(dial.f.failure().is_none(), "the association carries on");
+    assert_eq!(dial.f.pieces.len(), MAX_QUEUED, "the cap is unchanged");
+    // Further events on the failed stream neither append data nor repeat the failure.
+    dial.f
+        .event(Event::ChannelData(str0m::channel::ChannelData {
+            id,
+            binary: true,
+            data: vec![8],
+        }));
+    for _ in 0..MAX_QUEUED - 1 {
+        let piece = dial.f.next_piece().expect("previously admitted data");
+        assert_eq!(piece.stream, stream);
+        assert_eq!(piece.bytes, [0]);
+        assert!(!piece.failed);
+    }
+    let failure = dial.f.next_piece().expect("one terminal failure");
+    assert_eq!(failure.stream, stream);
+    assert!(failure.failed);
+    assert_eq!(
+        failure.bytes,
+        b"the data channel's messages outran the host: its queue reached the cap"
+    );
+    assert!(dial.f.next_piece().is_none());
 }
 
 /// A channel label containing a line break fails its stream without forging a field.

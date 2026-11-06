@@ -36,6 +36,8 @@ const MAX_HELD: usize = 256;
 /// dropped (a datagram network loses them anyway); an output overflow that cannot report a
 /// stream failure ends the association.
 pub(crate) const MAX_QUEUED: usize = MAX_HELD * 4;
+/// Payloads leave one slot within the output cap for a stream failure notification.
+const MAX_QUEUED_PAYLOADS: usize = MAX_QUEUED - 1;
 
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
 /// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
@@ -1227,7 +1229,7 @@ impl Framing {
                     return;
                 }
 
-                if self.pieces.len() >= MAX_QUEUED {
+                if self.pieces.len() >= MAX_QUEUED_PAYLOADS {
                     self.fail_stream(
                         s,
                         "the data channel's messages outran the host: its queue reached the cap",
@@ -1282,7 +1284,7 @@ impl Framing {
                 }
             }
             Event::MediaData(d) => {
-                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_QUEUED {
+                if !(self.verified && self.keyed) || self.pieces.len() >= MAX_QUEUED_PAYLOADS {
                     return;
                 }
                 if let Some(s) = self
