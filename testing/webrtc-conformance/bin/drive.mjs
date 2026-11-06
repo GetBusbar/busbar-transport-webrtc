@@ -31,7 +31,8 @@ export const CELLS = [
 const PREFIX = "webrtc-conformance: ";
 
 /** The verdict a run's lines earn: every browser, every cell, PASS; a browser that did not launch,
- *  or an unarmed subject, is not-run, never pass. */
+ *  or an unarmed subject, is not-run, never pass, unless a browser that did launch graded a cell
+ *  FAIL, which is a fail. */
 export function judge(lines, armed) {
   const browsers = {};
   const unavailable = [];
@@ -47,6 +48,11 @@ export function judge(lines, armed) {
   }
   if (!armed) {
     return { armed: false, status: "not-run", reason: "the subject was not armed", browsers };
+  }
+  const graded = Object.entries(browsers).flatMap(([b, cells]) =>
+    Object.entries(cells).filter(([, r]) => !r.pass).map(([c, r]) => `${b}/${c}: ${r.detail}`));
+  if (unavailable.length && graded.length) {
+    return { armed: true, status: "fail", reason: `${graded.join("; ")}; browser unavailable: ${unavailable.join("; ")}`, browsers };
   }
   if (unavailable.length) {
     return { armed: true, status: "not-run", reason: `browser unavailable: ${unavailable.join("; ")}`, browsers };
@@ -82,6 +88,7 @@ function selftest() {
     ["a missing cell fails", judge(good.slice(1), true).status === "fail"],
     ["a missing browser fails", judge(all("chromium", "PASS"), true).status === "fail"],
     ["a browser that did not launch is not-run", judge([...good, `${PREFIX}firefox launch FAIL no binary`], true).status === "not-run"],
+    ["a graded failure is a fail even when another browser did not launch", judge([...all("chromium", "FAIL"), `${PREFIX}firefox launch FAIL no binary`], true).status === "fail"],
     ["foreign lines are ignored", judge(["noise", ...good], true).status === "pass"],
   ];
   let red = 0;

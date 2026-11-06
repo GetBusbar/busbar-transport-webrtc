@@ -167,7 +167,23 @@ fn a_poisoned_association_is_never_served_torn() {
     })
     .join();
     assert!(unwound.is_err() && slot.is_poisoned());
-    assert!(hold_torn(&slot).0.is_none(), "the torn state is not served");
+    {
+        let (held, torn) = hold_torn(&slot);
+        assert!(held.is_none(), "the torn state is not served");
+        assert!(
+            torn,
+            "the caller is told the state was torn, so it forgets the token"
+        );
+    }
+    assert!(
+        !slot.is_poisoned(),
+        "the poison is cleared once the state is forgotten"
+    );
+    let (held, torn) = hold_torn(&slot);
+    assert!(
+        held.is_none() && !torn,
+        "a forgotten association is gone, not torn again"
+    );
 }
 
 /// Failure and writable pieces retain their respective flags.
@@ -196,10 +212,27 @@ fn a_message_gathered_past_the_cap_fails_its_stream_and_is_let_go() {
     assert!(h.gathering.is_empty(), "and nothing of it is kept");
 }
 
+/// A message gathered to exactly the channel cap is sent whole: the cap is inclusive.
+#[test]
+fn a_message_gathered_to_exactly_the_cap_is_sent() {
+    let mut h = held1();
+    let now = h.base;
+    let half = vec![1_u8; MAX_MESSAGE / 2];
+    assert_eq!(emit(&mut h, 1, &half, false, false, now), Ok(0));
+    assert_eq!(emit(&mut h, 1, &half, true, false, now), Ok(0));
+    assert!(
+        !h.f.stream_failed(1),
+        "a message of exactly the cap is not refused"
+    );
+    assert!(
+        h.gathering.is_empty(),
+        "the completed message left the gathering"
+    );
+}
+
 /// The tail states exactly the operations this door serves.
 #[test]
 fn the_tail_states_the_ops_the_door_serves() {
-    use busbar_contract::abi::transport::{FACT_ACCEPTS, FACT_ADOPTS, FACT_DETACHES, FACT_DIALS};
+    use busbar_contract::abi::transport::{FACT_ACCEPTS, FACT_DIALS};
     assert_eq!(TAIL.facts, FACT_ACCEPTS | FACT_DIALS);
-    assert_eq!(TAIL.facts & (FACT_DETACHES | FACT_ADOPTS), 0);
 }

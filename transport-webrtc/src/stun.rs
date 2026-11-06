@@ -149,3 +149,7 @@ pub fn is_stun(datagram: &[u8]) -> bool {
         Some(STUN_FIRST_BYTE_MIN..=STUN_FIRST_BYTE_MAX)
     )
 }
+
+#[cfg(test)]
+#[path = "tests/stun_tests.rs"]
+mod tests;

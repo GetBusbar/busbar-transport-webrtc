@@ -93,7 +93,7 @@ impl Held1 {
     }
 }
 
-/// One association behind its own lock, so one association's crypto never waits on another's:
+/// One association behind its own lock, so one association's crypto never waits on another's.
 type Slot = Arc<Mutex<Option<Held1>>>;
 
 /// The framings one instance holds.
@@ -277,7 +277,8 @@ fn answer(
         ];
         let candidates: String = t.candidates.iter().map(|c| format!("{c}\n")).collect();
         let total: usize = parts.iter().map(|p| p.len()).sum::<usize>() + candidates.len();
-        if frame.cap().saturating_sub(frame.asked()) >= total {
+        // The terms are the first bytes of the frame: they fit it whole, or never will.
+        if frame.cap() >= total {
             let mut span = |b: &[u8]| FrameSpan {
                 offset: frame.extend(b) as u64,
                 len: b.len() as u64,
@@ -300,11 +301,8 @@ fn answer(
                     span(candidates.as_bytes())
                 },
             };
-        } else if total > frame.cap() {
-            return Err("the rendezvous terms do not fit the host's frame buffer".into());
         } else {
-            h.f.restore_terms(t);
-            more = true;
+            return Err("the rendezvous terms do not fit the host's frame buffer".into());
         }
     }
 
@@ -374,6 +372,8 @@ fn answer(
 }
 
 /// Run `op` on the framing `token` names, then answer what it owes, with the yield flags `op`
+/// returns OR-ed into the answer's own. A failed framing, or an `op` or answer that errs, forgets
+/// the association and fails the call.
 fn with(
     inst: &Instance<'_, State>,
     t: &OpTexts,

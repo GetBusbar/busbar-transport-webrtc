@@ -135,3 +135,15 @@ fn red_arm_the_dtls_interface_outside_the_shim_is_refused() {
 
     assert!(findings("src/shim.rs", "use str0m::crypto::dtls::DtlsInstance;").is_empty());
 }
+
+#[test]
+fn the_shipped_plugin_crate_names_no_dtls_type() {
+    let plugin = crate_dir()
+        .parent()
+        .expect("the workspace")
+        .join("transport-webrtc-plugin");
+    let files = shipped(&plugin);
+    assert!(files.len() > 1, "the plugin crate's source is read");
+    let found = scan(&files);
+    assert!(found.is_empty(), "{}", found.join("\n"));
+}

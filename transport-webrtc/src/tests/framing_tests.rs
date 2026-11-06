@@ -489,7 +489,7 @@ fn last_nomination(dial: &End) -> Vec<u8> {
 
 #[test]
 fn a_spoofed_migration_never_moves_media_off_the_bound_path() {
-    let (mut dial, mut accept, mut now) = connected();
+    let (dial, mut accept, mut now) = connected();
     let bound = accept.bound;
     let spoof: SocketAddr = "192.0.2.66:5555".parse().expect("an address");
     let spoof_path = accept.path(spoof);
@@ -558,7 +558,6 @@ fn a_spoofed_migration_never_moves_media_off_the_bound_path() {
         before,
         "nothing read from an unbound path"
     );
-    let _ = &mut dial;
 }
 
 #[test]
@@ -1463,4 +1462,290 @@ fn channel_control_events_cannot_overrun_the_piece_queue() {
     dial.f.event(Event::ChannelOpen(id, "events".into()));
     assert!(dial.f.failure().is_some());
     assert_eq!(dial.f.pieces.len(), MAX_QUEUED);
+}
+
+/// `description` with its audio line refused (port 0) and carrying PCMU alone: no Opus.
+fn audio_refused(description: &[u8]) -> Vec<u8> {
+    let text = std::str::from_utf8(description).expect("SDP is text");
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("m=audio ") {
+            let f: Vec<&str> = line.trim_end().split(' ').collect();
+            out.push_str(&format!("m=audio 0 {} 0\r\n", f[2]));
+        } else if !line.starts_with("a=rtpmap:")
+            && !line.starts_with("a=fmtp:")
+            && !line.starts_with("a=rtcp-fb:")
+        {
+            out.push_str(line);
+        }
+    }
+    out.into_bytes()
+}
+
+#[test]
+fn a_media_line_without_opus_fails_its_stream_and_never_the_association() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    accept
+        .f
+        .rendezvous(&dial.description(), now)
+        .expect("offer");
+    let answer = audio_refused(&accept.description());
+    dial.f
+        .rendezvous(&answer, now)
+        .expect("an answer refusing the audio line settles");
+    dial.verified = true;
+    dial.host(Some(&[7; 56]), now).expect("keyed");
+    dial.f
+        .emit(MEDIA_BASE, OPUS, false, now)
+        .expect("a frame on a line without Opus fails that line alone");
+    dial.collect();
+    assert!(dial.f.failure().is_none(), "the association carries on");
+    assert!(dial.f.stream_failed(MEDIA_BASE));
+    assert!(
+        dial.pieces
+            .iter()
+            .any(|p| p.stream == MEDIA_BASE && p.failed),
+        "the host is told the line failed"
+    );
+    assert!(dial.f.carries(1), "the data channel is still carried");
+}
+
+/// `description` with every line starting `prefix` replaced by `line`.
+fn with_line(description: &[u8], prefix: &str, line: &str) -> Vec<u8> {
+    let text = std::str::from_utf8(description).expect("SDP is text");
+    let mut out = String::new();
+    for l in text.split_inclusive('\n') {
+        if l.starts_with(prefix) {
+            out.push_str(line);
+            out.push_str("\r\n");
+        } else {
+            out.push_str(l);
+        }
+    }
+    out.into_bytes()
+}
+
+#[test]
+fn a_blank_ice_credential_is_refused_as_the_far_ends_description() {
+    for (prefix, blank) in [
+        ("a=ice-ufrag:", "a=ice-ufrag: "),
+        ("a=ice-pwd:", "a=ice-pwd: "),
+    ] {
+        let now = Instant::now();
+        let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+        let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+        let offer = with_line(&dial.description(), prefix, blank);
+        assert!(
+            accept.f.rendezvous(&offer, now).is_err(),
+            "an offer whose {prefix} is blank settles no terms"
+        );
+        assert!(accept.f.take_terms().is_none());
+    }
+}
+
+#[test]
+fn the_handshake_role_agrees_with_the_media_stacks_reading_of_setup() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    // The media stack reads `a=setup:` values exactly, so `PASSIVE` leaves it passive itself.
+    let offer = with_line(&dial.description(), "a=setup:", "a=setup:PASSIVE");
+    accept.f.rendezvous(&offer, now).expect("offer");
+    let terms = accept.f.take_terms().expect("terms");
+    assert!(
+        !terms.initiates,
+        "the host must not open the handshake while the media stack stays passive"
+    );
+}
+
+#[test]
+fn an_unparsable_description_is_refused_without_a_memory_address() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    let mut offer = dial.description().to_vec();
+    offer.extend_from_slice(b"m=audio x UDP/TLS/RTP/SAVPF 111\r\n");
+    let why = accept.f.rendezvous(&offer, now).expect_err("refused");
+    assert!(why.starts_with("the offer did not parse"), "{why}");
+    assert!(
+        !why.contains("0x") && !why.contains("PointerOffset"),
+        "a refusal never carries an address: {why}"
+    );
+}
+
+#[test]
+fn the_handshake_role_follows_the_first_setup_value_the_media_stack_reads() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    // The media stack skips a value it cannot read and takes the next: `passive`, so it is active.
+    let offer = with_line(
+        &dial.description(),
+        "a=setup:",
+        "a=setup:Passive\r\na=setup:passive",
+    );
+    accept.f.rendezvous(&offer, now).expect("offer");
+    let terms = accept.f.take_terms().expect("terms");
+    assert!(
+        terms.initiates,
+        "the host opens the handshake as the media stack, active, expects"
+    );
+    let answer = accept.description();
+    assert!(
+        String::from_utf8_lossy(&answer).contains("a=setup:active"),
+        "the media stack took the active role the host was told"
+    );
+}
+
+#[test]
+fn a_framings_debug_names_its_state_and_never_its_credentials() {
+    let f = Framing::begin(
+        Side::Accept,
+        CERT,
+        None,
+        &Opening::default(),
+        Instant::now(),
+    )
+    .unwrap();
+    let pass = f.local_creds.pass.clone();
+    let shown = format!("{f:?}");
+    assert!(shown.starts_with("Framing { side: Accept"), "{shown}");
+    assert!(
+        !shown.contains(&pass) && !shown.contains(&f.local_creds.ufrag),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_pieces_debug_shows_channel_bytes_but_never_a_description() {
+    let message = Piece {
+        stream: 1,
+        bytes: b"hi".to_vec(),
+        fields: false,
+        text: true,
+        end: false,
+        failed: false,
+        writable: false,
+    };
+    assert!(format!("{message:?}").contains("[104, 105]"));
+    let description = Piece {
+        stream: DESCRIPTION,
+        bytes: b"a=ice-pwd:secret".to_vec(),
+        ..message.clone()
+    };
+    let shown = format!("{description:?}");
+    assert!(shown.contains("<redacted session description>"), "{shown}");
+}
+
+#[test]
+fn the_far_ends_udp_candidates_are_read_in_either_address_family_and_others_skipped() {
+    let print = ["ab"; 32].join(":");
+    let description = format!(
+        "v=0\r\na=ice-ufrag:user\r\na=ice-pwd:passwordpasswordpassword\r\na=fingerprint:sha-256 {print}\r\n\
+         a=candidate:1 1 tcp 1 192.0.2.1 9 typ host tcptype passive\r\n\
+         a=candidate:2 1 udp 1 2001:db8::1 5000 typ host\r\n\
+         a=candidate:3 1 UDP 1 192.0.2.7 6000 typ host\r\n\
+         a=candidate:4 1 udp 1 not-an-address 7000 typ host\r\n\
+         a=candidate:5 1 udp\r\n"
+    );
+    let (user, _, fingerprint, candidates) = read_remote(&description).expect("read");
+    assert_eq!(user, "user");
+    assert_eq!(fingerprint, [0xab; 32]);
+    assert_eq!(
+        candidates,
+        vec![
+            "[2001:db8::1]:5000".parse::<SocketAddr>().unwrap(),
+            "192.0.2.7:6000".parse().unwrap()
+        ],
+        "TCP, unparsable and truncated candidates are skipped"
+    );
+}
+
+#[test]
+fn a_second_offer_on_one_association_is_refused() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    let offer = dial.description();
+    accept.f.rendezvous(&offer, now).expect("the first offer");
+    assert_eq!(
+        accept.f.rendezvous(&offer, now),
+        Err("a second offer on one association".to_owned())
+    );
+}
+
+#[test]
+fn an_address_a_new_path_takes_over_is_forgotten_by_its_old_path() {
+    let mut f = Framing::begin(
+        Side::Accept,
+        CERT,
+        None,
+        &Opening::default(),
+        Instant::now(),
+    )
+    .unwrap();
+    let a: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+    f.paths([(1, a)]);
+    f.paths([(2, a)]);
+    assert_eq!(f.addrs.get(&a), Some(&2));
+    assert!(
+        !f.paths.contains_key(&1),
+        "path 1 no longer names the address path 2 took"
+    );
+    f.paths([(0, a)]);
+    assert_eq!(f.addrs.get(&a), Some(&2), "path 0 names nothing");
+}
+
+#[test]
+fn the_host_ports_address_is_taken_once() {
+    let mut f = Framing::begin(
+        Side::Accept,
+        CERT,
+        None,
+        &Opening::default(),
+        Instant::now(),
+    )
+    .unwrap();
+    f.local("192.0.2.1:1000".parse().unwrap()).unwrap();
+    f.local("192.0.2.2:2000".parse().unwrap()).unwrap();
+    assert_eq!(f.local, Some("192.0.2.1:1000".parse().unwrap()));
+}
+
+#[test]
+fn an_answer_states_the_host_candidate_even_when_the_stack_puts_it_on_no_line() {
+    let now = Instant::now();
+    let mut dial = End::new(Side::Dial, "198.51.100.1:40000", &opening(), now);
+    let mut accept = End::new(Side::Accept, "203.0.113.9:3478", &Opening::default(), now);
+    let offer = String::from_utf8(dial.description().to_vec()).unwrap();
+    // A first media line of a type the media stack skips (a copy of the channel's line, retyped):
+    // it states its candidates only on its first line, which it then never keeps.
+    let at = offer.find("m=application").expect("the channel's line");
+    let section = &offer[at..];
+    let section = &section[..section[1..].find("\nm=").map_or(section.len(), |n| n + 2)];
+    let mid = section
+        .lines()
+        .find_map(|l| l.strip_prefix("a=mid:"))
+        .expect("a mid");
+    let skipped = section
+        .replacen("m=application", "m=text", 1)
+        .replace(&format!("a=mid:{mid}"), "a=mid:skipped");
+    let bundle = offer
+        .lines()
+        .find(|l| l.starts_with("a=group:BUNDLE "))
+        .expect("a bundle group");
+    let offer = offer.replacen(
+        bundle,
+        &format!("a=group:BUNDLE skipped {}", &bundle[15..]),
+        1,
+    );
+    let first = offer.find("m=").expect("a media line");
+    let offer = format!("{}{skipped}{}", &offer[..first], &offer[first..]);
+    accept.f.rendezvous(offer.as_bytes(), now).expect("offer");
+    let answer = String::from_utf8(accept.description().to_vec()).unwrap();
+    assert!(
+        answer.contains("udp 2130706431 203.0.113.9 3478 typ host"),
+        "the host port is stated as this end's candidate"
+    );
 }

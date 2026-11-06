@@ -39,6 +39,9 @@ pub(crate) const MAX_QUEUED: usize = MAX_HELD * 4;
 /// Payloads leave one slot within the output cap for a stream failure notification.
 const MAX_QUEUED_PAYLOADS: usize = MAX_QUEUED - 1;
 
+/// The most outputs one drain takes from the media stack before it yields to the host.
+const MAX_DRAIN_OUTPUTS: usize = 10_000;
+
 /// How long ICE may stay "disconnected" before its path counts as failed and the association ends
 /// (the media stack has no "failed" state of its own: a disconnected agent may come back as it
 /// checks pairs again). Browsers fail a connection after the same 30 seconds without a working
@@ -328,14 +331,16 @@ type Remote = (String, Zeroizing<String>, [u8; 32], Vec<SocketAddr>);
 fn read_remote(description: &str) -> Result<Remote, Failed> {
     let user = values(description, "a=ice-ufrag:")
         .next()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
         .ok_or("the far end's description has no check user")?
-        .trim()
         .to_owned();
     let secret = Zeroizing::new(
         values(description, "a=ice-pwd:")
             .next()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
             .ok_or("the far end's description has no check secret")?
-            .trim()
             .to_owned(),
     );
     let print = values(description, "a=fingerprint:")
@@ -374,11 +379,22 @@ fn read_remote(description: &str) -> Result<Remote, Failed> {
 
 /// Whether this end opens the handshake. The media stack takes the role opposite the far end's
 /// `a=setup:` (an `actpass` or absent one leaves this end passive), so this end initiates exactly
-/// when the far end said `passive`.
+/// when the far end said `passive`, read as the media stack reads it: the first value that is
+/// exactly one of its lower-case words (it skips any other spelling, and the host must agree with
+/// the role it takes).
 fn initiates(description: &str) -> bool {
-    values(description, "a=setup:")
-        .next()
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("passive"))
+    values(description, "a=setup:").find(|v| matches!(*v, "actpass" | "active" | "passive"))
+        == Some("passive")
+}
+
+/// A description parse error in words, without the parser's position: the media stack's parser
+/// states a position as a memory address, which no refusal carries.
+fn unparsed(e: impl std::fmt::Display) -> String {
+    e.to_string()
+        .lines()
+        .filter(|l| !l.contains("PointerOffset"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// A fresh check credential: `n` random bytes as lower-case hex (RFC 8445 §5.3: the user at least
@@ -603,7 +619,7 @@ impl Framing {
                         .is_some_and(|port| port != "0")
                 });
                 let offer = SdpOffer::from_sdp_string(text)
-                    .map_err(|e| format!("the offer did not parse: {e}"))?;
+                    .map_err(|e| format!("the offer did not parse: {}", unparsed(e)))?;
                 let answer = self
                     .rtc
                     .sdp_api()
@@ -614,7 +630,7 @@ impl Framing {
             Side::Dial => {
                 let pending = self.pending.take().ok_or("an answer with no offer out")?;
                 let answer = SdpAnswer::from_sdp_string(text)
-                    .map_err(|e| format!("the answer did not parse: {e}"))?;
+                    .map_err(|e| format!("the answer did not parse: {}", unparsed(e)))?;
                 self.rtc
                     .sdp_api()
                     .accept_answer(pending, answer)
@@ -843,7 +859,9 @@ impl Framing {
                 .find(|p| p.spec().codec == Codec::Opus)
                 .map(|p| p.pt());
             let Some(pt) = pt else {
-                return Err("the media line carries no Opus".into());
+                self.fail_stream(stream, "the media line carries no Opus");
+                self.drain(now);
+                return Ok(());
             };
             if let Err(e) = writer.write(
                 pt,
@@ -935,7 +953,8 @@ impl Framing {
         self.full.contains(&stream)
     }
 
-    /// Whether `stream` was a data channel that has since closed (its END piece told the host):
+    /// Whether `stream` was a data channel that has since closed (its END piece told the host, or,
+    /// for a channel that failed first, its failure piece did).
     #[must_use]
     pub fn stream_ended(&self, stream: u64) -> bool {
         (1..self.next_channel).contains(&stream) && !self.channel_by_stream.contains_key(&stream)
@@ -1040,7 +1059,7 @@ impl Framing {
         if self.failed.is_some() {
             return;
         }
-        for _ in 0..10_000 {
+        for _ in 0..MAX_DRAIN_OUTPUTS {
             let out = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.rtc.poll_output()
             })) {
@@ -1338,11 +1357,6 @@ impl Framing {
     /// The rendezvous terms, taken.
     pub fn take_terms(&mut self) -> Option<Terms> {
         self.terms.take()
-    }
-
-    /// Put the terms back (the host's frame buffer could not hold them whole).
-    pub fn restore_terms(&mut self, t: Terms) {
-        self.terms = Some(t);
     }
 
     /// When [`Self::timeout`] is next owed.

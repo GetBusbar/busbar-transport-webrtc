@@ -36,7 +36,6 @@ const MAX_REQUEST: usize = 256 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Break {
     None,
-    Channel,
     Media,
     Close,
 }
@@ -101,7 +100,6 @@ impl Port {
             let line = self.lines.get(&(id, g.stream)).copied().unwrap_or(false);
             let skip = match self.broken {
                 Break::None | Break::Close => false,
-                Break::Channel => !line,
                 Break::Media => line,
             };
             if skip {
@@ -249,7 +247,6 @@ fn main() {
         .nth(1)
         .as_deref()
     {
-        Some("channel") => Break::Channel,
         Some("media") => Break::Media,
         Some("close") => Break::Close,
         _ => Break::None,

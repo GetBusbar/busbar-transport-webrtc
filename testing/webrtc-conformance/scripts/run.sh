@@ -4,15 +4,21 @@
 #
 # THE BROWSER CELL: headless Chromium and Firefox drive a real offer/answer, data-channel echo and
 # media round trip against busbar's terminating datagram path (the webrtc-conformance-subject),
-# in the same control-always + subject-armed-or-red shape as testing/ws-conformance/scripts/run.sh.
+# in a control-always + subject-armed-or-red shape.
 #
 # MODES
-#   --selftest           the judgement bites on captured fixtures and the subject builds (no browser)
-#   --subject-arm        build the webrtc-conformance-subject and report whether it is ARMED
-#   --install            fetch the pinned browsers (npx playwright install chromium firefox)
-#   --control            the page's own control (the browser against itself) must PASS
-#   --negative-control   the subject with its line echo broken MUST grade red on media alone
-#   --subject            the cell against the subject; ARMED OR RED
+#   --selftest                 the judgement and the page's close cell bite on captured fixtures
+#                              (no browser, no subject)
+#   --install                  fetch the pinned browsers (npx playwright install chromium firefox)
+#   --control                  the page's own control (the browser against itself) must PASS
+#   --negative-control         the subject with its line echo broken MUST grade red on media alone,
+#                              then --negative-close-control
+#   --negative-close-control   the subject with its close receipt suppressed MUST grade red on close
+#   --subject                  the cell against the subject; ARMED OR RED
+#
+# The subject mounts busbar's doors.rs and is no member of this workspace: it builds only in
+# testing/conformance/webrtc-browser.sh's overlay against a busbar checkout, which places the binary
+# at SUBJECT_BIN before any subject leg runs.
 #
 # Browsers are the instrument: a browser that does not launch makes a leg exit 3 (not-run), never
 # a pass. The subject binds the host's first non-loopback IPv4 address (WEBRTC_SUBJECT_HOST
@@ -27,19 +33,11 @@ SUBJECT_BIN="$REPO_ROOT/target/debug/webrtc-conformance-subject"
 
 mode="${1:---selftest}"
 
-subject_arm() {
-  if cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p webrtc-conformance-subject; then
-    if [ -x "$SUBJECT_BIN" ]; then
-      echo "  ok: webrtc-conformance-subject built (ARMED)"
-      return 0
-    fi
-  fi
-  echo "  RED: webrtc-conformance-subject did not build (NOT ARMED)" >&2
-  return 1
-}
+# Temporary files and directories this run made, removed on exit.
+SCRATCH=()
 
 status_of() {
-  node -e "console.log(JSON.parse(require('fs').readFileSync('$1','utf8')).status)"
+  node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).status)' "$1"
 }
 
 selftest() {
@@ -48,6 +46,7 @@ selftest() {
   node --test "$ROOT/page/close_test.mjs"
   local tmp
   tmp="$(mktemp -d)"
+  SCRATCH+=("$tmp")
   node "$DRIVE" --judge "$FIXTURES/good.txt" --armed true --out "$tmp/good.json"
   [ "$(status_of "$tmp/good.json")" = "pass" ] || { echo "FAIL: good fixture is not pass" >&2; return 1; }
   echo "  ok: good fixture -> pass"
@@ -60,13 +59,8 @@ selftest() {
   node "$DRIVE" --judge "$FIXTURES/good.txt" --armed false --out "$tmp/unarmed.json" || true
   [ "$(status_of "$tmp/unarmed.json")" = "not-run" ] || { echo "FAIL: unarmed + good is not not-run" >&2; return 1; }
   echo "  ok: unarmed + good fixture -> not-run (NOT pass)"
-  echo "== subject binary builds and reports ARMED =="
-  local rc=0
-  subject_arm || rc=$?
-  rm -rf "$tmp"
-  [ "$rc" -eq 0 ] || return "$rc"
   echo
-  echo "webrtc-conformance selftest: all judgement and arm-state checks passed"
+  echo "webrtc-conformance selftest: all judgement checks passed"
 }
 
 host() {
@@ -83,9 +77,13 @@ host() {
 
 # Start the subject with "$@"; sets SUBJECT_PID and SUBJECT_URL.
 start_subject() {
-  [ -x "$SUBJECT_BIN" ] || subject_arm
+  if [ ! -x "$SUBJECT_BIN" ]; then
+    echo "  RED: no webrtc-conformance-subject at $SUBJECT_BIN (NOT ARMED)" >&2
+    return 1
+  fi
   local out
   out="$(mktemp)"
+  SCRATCH+=("$out" "$out.err")
   WEBRTC_SUBJECT_HOST="$(host)" "$SUBJECT_BIN" "$@" >"$out" 2>"$out.err" &
   SUBJECT_PID=$!
   SUBJECT_URL=""
@@ -107,17 +105,21 @@ stop_subject() {
   [ -n "${SUBJECT_PID:-}" ] && kill "$SUBJECT_PID" 2>/dev/null || true
   wait "${SUBJECT_PID:-}" 2>/dev/null || true
 }
-trap stop_subject EXIT
+cleanup() {
+  stop_subject
+  [ "${#SCRATCH[@]}" -eq 0 ] || rm -rf "${SCRATCH[@]}"
+}
+trap cleanup EXIT
 
 drive() {
-  # $1: page mode (cell|control); $2: report tag
+  # $1: page mode (cell|control); $2: report tag. A leg is judged only on its own fresh verdict.
+  rm -rf "${REPORTS_DIR:?}/$2"
   mkdir -p "$REPORTS_DIR/$2"
   node "$DRIVE" --url "$SUBJECT_URL" --mode "$1" --out "$REPORTS_DIR/$2"
 }
 
 case "$mode" in
   --selftest) selftest ;;
-  --subject-arm) subject_arm ;;
   --install)
     (cd "$ROOT" && npx --no-install playwright install chromium firefox)
     ;;
@@ -134,6 +136,8 @@ case "$mode" in
     # instrument reached the subject, the media cells failing shows it catches a broken line.
     node -e '
       const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      // A browser that did not launch leaves the leg not-run, whatever the other one graded.
+      if (/browser unavailable/.test(v.reason)) process.exit(3);
       const red = (b, c) => !(v.browsers[b] && v.browsers[b][c] && v.browsers[b][c].pass);
       const ok = v.status === "fail" &&
         ["chromium", "firefox"].every((b) => red(b, "media-round-trip") && !red(b, "channel-text"));
@@ -151,6 +155,7 @@ case "$mode" in
     [ "$rc" -eq 3 ] && exit 3
     node -e '
       const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      if (/browser unavailable/.test(v.reason)) process.exit(3);
       const ok = v.status === "fail" && ["chromium", "firefox"].every((b) =>
         v.browsers[b]?.close?.pass === false && v.browsers[b]?.["channel-text"]?.pass === true);
       console.log("webrtc-conformance: negative-close-control " + (ok ? "bites" : "DOES NOT BITE"));
@@ -167,7 +172,7 @@ case "$mode" in
     drive cell subject
     ;;
   *)
-    echo "usage: $0 --selftest|--subject-arm|--install|--control|--negative-control|--negative-close-control|--subject" >&2
+    echo "usage: $0 --selftest|--install|--control|--negative-control|--negative-close-control|--subject" >&2
     exit 2
     ;;
 esac

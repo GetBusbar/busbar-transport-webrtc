@@ -33,9 +33,12 @@ const AAD_ON_STACK: usize = 1024;
 
 const RTP_VERSION_MASK: u8 = 0xc0;
 const RTP_VERSION_2: u8 = 0x80;
-const RTP_PAYLOAD_TYPE_MASK: u8 = 0x7f;
-const RTCP_PAYLOAD_TYPE_MIN: u8 = 64;
-const RTCP_PAYLOAD_TYPE_MAX: u8 = 95;
+/// The RTCP packet types that share the RTP/RTCP demultiplexing range (RFC 5761 §4): the whole
+/// second byte, never masked. An RTP header's second byte is its marker bit and payload type, so
+/// an unmarked RTP packet (the media stack never marks Opus) is never taken for SRTCP, even under
+/// a payload type a far end mapped into 64..=95.
+const RTCP_PACKET_TYPE_MIN: u8 = 192;
+const RTCP_PACKET_TYPE_MAX: u8 = 223;
 
 const SRTCP_HEADER_LEN: usize = 8;
 const SRTCP_INDEX_LEN: usize = 4;
@@ -231,8 +234,7 @@ impl Gcm {
 
         if aad.len() == SRTCP_AAD_LEN
             && aad[0] & RTP_VERSION_MASK == RTP_VERSION_2
-            && (RTCP_PAYLOAD_TYPE_MIN..=RTCP_PAYLOAD_TYPE_MAX)
-                .contains(&(aad[1] & RTP_PAYLOAD_TYPE_MASK))
+            && (RTCP_PACKET_TYPE_MIN..=RTCP_PACKET_TYPE_MAX).contains(&aad[1])
             && aad[SRTCP_HEADER_LEN] & SRTCP_ENCRYPTED_BYTE_FLAG != 0
         {
             let index = u32::from_be_bytes(

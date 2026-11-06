@@ -674,3 +674,11 @@ fn cancelling_a_borrowed_description_crossing_wipes_the_extracted_owner() {
     #[cfg(target_os = "linux")]
     assert_eq!(freed_unzeroed(10), 0);
 }
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn session_description_behavior_only_without_linux_wipe_proof() {
+    session_description_payload_is_zeroised_on_drop();
+    extracting_a_description_preserves_its_allocation_until_the_wiping_owner_drops();
+    cancelling_a_borrowed_description_crossing_wipes_the_extracted_owner();
+}

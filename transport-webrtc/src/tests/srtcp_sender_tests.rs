@@ -28,7 +28,6 @@ fn srtcp_sender_refuses_wrap_before_reusing_a_key_and_nonce() {
         cipher
             .seal(&nonce(7, 0), &aad(7, 0), &[42; 20], &mut output)
             .unwrap();
-        let first = output;
         cipher
             .seal(
                 &nonce(7, 0x7fff_ffff),
@@ -55,11 +54,7 @@ fn srtcp_sender_refuses_wrap_before_reusing_a_key_and_nonce() {
         let mut rekeyed = Gcm::new(algorithm, &new_key).unwrap();
         rekeyed
             .seal(&nonce(7, 0), &aad(7, 0), &[42; 20], &mut output)
-            .unwrap();
-        assert_ne!(
-            output, first,
-            "a genuinely new key starts its own index epoch"
-        );
+            .expect("a genuinely new key starts its own index epoch");
     }
 }
 
@@ -218,4 +213,67 @@ pub(super) fn before_seal(cipher: &mut Gcm, iv: &[u8; 12], header: &[u8], input:
         state.primed = true;
         slot.set(state);
     });
+}
+
+/// A plain 12-byte RTP header (V=2, no CSRC, no extension, marker clear) whose payload type a far
+/// end mapped into 64..=95 and whose SSRC has its top bit set: the AAD is SRTCP-shaped in every
+/// byte but the second, which is an RTP payload type (< 128), never an RTCP packet type.
+fn rtp_aad(pt: u8, seq: u16, ssrc: u32) -> [u8; 12] {
+    let mut header = [0x80, pt, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    header[2..4].copy_from_slice(&seq.to_be_bytes());
+    header[8..].copy_from_slice(&ssrc.to_be_bytes());
+    header
+}
+
+#[test]
+fn rtp_under_a_payload_type_in_the_rtcp_range_is_never_held_to_the_srtcp_sender_index() {
+    for algorithm in [&AES_128_GCM, &AES_256_GCM] {
+        let mut cipher = Gcm::new(algorithm, &vec![9; algorithm.key_len()]).unwrap();
+        let ssrc = 0x9234_5678;
+        let mut output = [0; 36];
+        for seq in 0..3 {
+            cipher
+                .seal(
+                    &nonce(ssrc, seq.into()),
+                    &rtp_aad(77, seq, ssrc),
+                    &[42; 20],
+                    &mut output,
+                )
+                .expect("an RTP packet of one source seals under each sequence number");
+        }
+    }
+}
+
+#[test]
+fn every_rtcp_packet_type_in_the_mux_range_is_held_to_the_sender_index() {
+    for packet_type in [192_u8, 200, 205, 206, 223] {
+        let mut cipher = Gcm::new(&AES_128_GCM, &[9; 16]).unwrap();
+        let mut header = aad(7, 5);
+        header[1] = packet_type;
+        let mut output = [0; 36];
+        cipher
+            .seal(&nonce(7, 5), &header, &[42; 20], &mut output)
+            .unwrap();
+        assert!(
+            cipher
+                .seal(&nonce(7, 5), &header, &[42; 20], &mut output)
+                .is_err(),
+            "a reused SRTCP index under packet type {packet_type} is refused"
+        );
+    }
+}
+
+#[test]
+fn second_bytes_beside_the_rtcp_mux_range_are_never_held_to_the_sender_index() {
+    for second in [191_u8, 224, 255] {
+        let mut cipher = Gcm::new(&AES_128_GCM, &[9; 16]).unwrap();
+        let mut header = aad(7, 5);
+        header[1] = second;
+        let mut output = [0; 36];
+        for _ in 0..2 {
+            cipher
+                .seal(&nonce(7, 5), &header, &[42; 20], &mut output)
+                .expect("a header outside the RTCP range is RTP, never index-checked");
+        }
+    }
 }

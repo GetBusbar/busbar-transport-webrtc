@@ -238,3 +238,85 @@ fn the_digests_meet_their_vectors() {
         ]
     );
 }
+
+fn refused_with(r: Result<impl std::fmt::Debug, CryptoError>, words: &str) -> bool {
+    matches!(r, Err(CryptoError::Other(why)) if why == words)
+}
+
+#[test]
+fn a_cipher_whose_key_the_provider_refused_refuses_every_packet() {
+    let mut out = [0_u8; 64];
+    let mut c128: Box<dyn AeadAes128GcmCipher> = Box::new(Unkeyed);
+    assert!(refused_with(
+        c128.encrypt(&[0; 12], b"aad", b"payload", &mut out),
+        "SRTP key refused"
+    ));
+    assert!(refused_with(
+        c128.decrypt(&[0; 12], &[b"aad"], &[0; 32], &mut out),
+        "SRTP key refused"
+    ));
+    let mut c256: Box<dyn AeadAes256GcmCipher> = Box::new(Unkeyed);
+    assert!(refused_with(
+        c256.encrypt(&[0; 12], b"aad", b"payload", &mut out),
+        "SRTP key refused"
+    ));
+    assert!(refused_with(
+        c256.decrypt(&[0; 12], &[b"aad"], &[0; 32], &mut out),
+        "SRTP key refused"
+    ));
+}
+
+#[test]
+fn a_key_of_the_wrong_length_builds_no_cipher() {
+    assert!(Gcm::new(&AES_128_GCM, &[1; 32]).is_none());
+    assert!(Gcm::new(&AES_256_GCM, &[1; 16]).is_none());
+}
+
+#[test]
+fn seal_and_open_refuse_buffers_that_cannot_hold_the_packet() {
+    let mut c = Gcm::new(&AES_128_GCM, &[3; 16]).unwrap();
+    let rtp = [0x80, 111, 0, 1, 0, 0, 0, 1, 0, 0, 0, 7];
+    let mut short = [0_u8; 20];
+    assert!(refused_with(
+        c.seal(&[0; 12], &rtp, &[5; 8], &mut short),
+        "SRTP seal: output too short"
+    ));
+    let mut sealed = [0_u8; 24];
+    c.seal(&[0; 12], &rtp, &[5; 8], &mut sealed).unwrap();
+    let mut out = [0_u8; 8];
+    assert!(refused_with(
+        c.open(&[0; 12], &[&rtp], &sealed[..15], &mut out),
+        "SRTP open: shorter than its tag"
+    ));
+    assert!(refused_with(
+        c.open(&[0; 12], &[&rtp], &sealed, &mut out[..7]),
+        "SRTP open: output too short"
+    ));
+    assert_eq!(c.open(&[0; 12], &[&rtp], &sealed, &mut out).unwrap(), 8);
+    assert_eq!(out, [5; 8], "the packet opens to what was sealed");
+}
+
+#[test]
+fn an_authenticated_srtcp_report_in_an_unknown_layout_is_refused_and_cleared() {
+    let mut c = Gcm::new(&AES_128_GCM, &[3; 16]).unwrap();
+    // Two AAD slices that are neither str0m SRTCP layout: a short head and a three-byte index.
+    let (head, tail): (&[u8], &[u8]) = (&[0x80, 200, 0, 1, 0, 0, 0], &[0, 0, 1]);
+    let aad = [head, tail].concat();
+    let mut sealed = [0_u8; 26];
+    c.seal(&[0; 12], &aad, &[5; 10], &mut sealed).unwrap();
+    let mut out = [0xa5_u8; 10];
+    assert!(refused_with(
+        c.open(&[0; 12], &[head, tail], &sealed, &mut out),
+        SRTCP_LAYOUT_REFUSED
+    ));
+    assert_eq!(
+        out, [0; 10],
+        "the opened bytes of a refused report are cleared"
+    );
+}
+
+#[test]
+fn a_ciphers_debug_names_no_key_state() {
+    let c = Gcm::new(&AES_128_GCM, &[3; 16]).unwrap();
+    assert_eq!(format!("{c:?}"), "Gcm { .. }");
+}

@@ -372,3 +372,7 @@ impl DtlsInstance for Shim {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/shim_tests.rs"]
+mod tests;

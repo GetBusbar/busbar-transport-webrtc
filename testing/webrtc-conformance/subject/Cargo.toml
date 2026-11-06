@@ -9,7 +9,7 @@ description = "Browser-cell subject: busbar's terminating datagram path (the web
 
 # TESTKIT, NOT PRODUCT PATH. This binary exists only so headless browsers have busbar's real
 # terminating path to call: the webrtc door admitted through the root's own doors module (mounted
-# by path, as testing/ws-conformance/subject mounts it), driven by the connector's EXISTING public
+# by path), driven by the connector's EXISTING public
 # datagram API (`datagram::DatagramFraming`, `datagram::Associations`, `udp::ReadyPort`) over one
 # host port. It is not shipped, `cargo build --bin busbar` never builds it, and it adds no product
 # surface.

@@ -117,7 +117,7 @@ leg() { # <name> <run.sh mode>
     *) fails="$fails $1" ;;
   esac
 }
-rc=0; "$REAL_NODE" "$H/bin/drive.mjs" --selftest >>"$LOG" 2>&1 || rc=$?
+rc=0; bash "$H/scripts/run.sh" --selftest >>"$LOG" 2>&1 || rc=$?
 [ "$rc" -eq 0 ] || fails="$fails judgement-selftest"
 leg control --control
 leg negative-control --negative-control
@@ -125,7 +125,7 @@ leg subject --subject
 
 detail="$("$REAL_NODE" -e '
   const fs = require("fs");
-  for (const t of ["control", "negative-control", "subject"]) {
+  for (const t of ["control", "negative-control", "negative-close-control", "subject"]) {
     try { const v = JSON.parse(fs.readFileSync(process.argv[1] + "/reports/" + t + "/verdict.json", "utf8"));
       console.log(t + ": " + v.status + " (" + v.reason + ")"); } catch (e) { console.log(t + ": no verdict"); }
   }' "$H" | tr '\n' ' ')"
