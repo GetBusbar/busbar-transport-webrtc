@@ -7,7 +7,6 @@ First-party signed kind:transport plugin cdylib: the webrtc transport, packaged 
 |---|---|---|---|---|
 | `transport` | `webrtc` | `busbar-transport-webrtc-plugin` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
 
-[![ci](https://github.com/GetBusbar/busbar-transport-webrtc/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-transport-webrtc/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
 
 ## What it is for
