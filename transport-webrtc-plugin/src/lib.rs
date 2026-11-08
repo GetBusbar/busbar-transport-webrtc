@@ -9,7 +9,7 @@
 
 #![deny(unsafe_code)]
 
-pub use busbar_transport_webrtc::*;
+pub use busbar_transport_webrtc::{door, linked, MACRO_DOOR};
 
 /// The exported door: the macro's `#[no_mangle]` symbol is the one exemption.
 #[allow(unsafe_code)]

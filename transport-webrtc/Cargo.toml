@@ -38,5 +38,6 @@ zeroize = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 jsonschema = { workspace = true }
-busbar-contract = { workspace = true, features = ["test-support"] }
+busbar-contract = { workspace = true, features = ["test-seal", "test-support"] }
 libc = { workspace = true }
+busbar-plugin-loader = { workspace = true, features = ["test-support"] }

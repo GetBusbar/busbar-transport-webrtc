@@ -130,6 +130,7 @@ pub fn keying_frame(material: &[u8], profile: u32) -> Result<Zeroizing<Vec<u8>>,
 
 /// Whether `frame` is a keying datagram not yet handed to the shim.
 #[must_use]
+#[cfg(test)]
 pub fn is_keying(frame: &[u8]) -> bool {
     frame.first() == Some(&KEYING)
 }
@@ -260,6 +261,7 @@ impl Shim {
 
     /// Whether material is still held (not yet handed to the media stack).
     #[must_use]
+    #[cfg(test)]
     pub fn holds_keying(&self) -> bool {
         self.lock().keying.is_some()
     }

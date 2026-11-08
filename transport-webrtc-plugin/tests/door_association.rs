@@ -19,7 +19,7 @@ use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{
     load_linked, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, Plugin,
 };
-use busbar_transport_webrtc::framing::MEDIA_BASE;
+const MEDIA_BASE: u64 = 0x1_0000_0000;
 
 #[path = "support/abi.rs"]
 pub mod conf;
@@ -30,7 +30,10 @@ const PROFILE: u32 = 0x0007;
 const KEYING_LEN: usize = 56;
 
 fn door() -> Plugin<Transport> {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let row = LinkedRow::of(busbar_transport_webrtc::linked::door).expect("real door statement");
     let p = load_linked::<Transport>(&row, conf::bind(&d, "webrtc")).expect("loads");
     assert_eq!(conf::open(&p).outcome, Outcome::Ready);

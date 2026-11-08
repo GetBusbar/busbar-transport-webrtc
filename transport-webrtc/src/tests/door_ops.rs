@@ -17,10 +17,11 @@ use busbar_contract::abi::transport::{
 };
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{Frame, Plugin};
-#[path = "support/abi.rs"]
+#[allow(dead_code)]
+#[path = "../../../transport-webrtc-plugin/tests/support/abi.rs"]
 pub mod conf;
+use crate::framing::{Framing, Opening, Side, DESCRIPTION};
 use busbar_plugin_loader::dispatch::{load_linked, DispatchConfig, Dispatcher, LinkedRow};
-use busbar_transport_webrtc::framing::{Framing, Opening, Side, DESCRIPTION};
 
 const LOCAL: &str = "198.51.100.1:40000";
 const FAR: &str = "203.0.113.9:3478";
@@ -28,8 +29,11 @@ const CERT: &[u8] = b"the host's public certificate, DER";
 
 /// The linked door, loaded and opened.
 fn door() -> Plugin<Transport> {
-    let d = Dispatcher::new(DispatchConfig::default());
-    let row = LinkedRow::of(busbar_transport_webrtc::linked::door).expect("real door statement");
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
+    let row = LinkedRow::of(crate::linked::door).expect("real door statement");
     let p = load_linked::<Transport>(&row, conf::bind(&d, "webrtc")).expect("loads");
     assert_eq!(conf::open(&p).outcome, Outcome::Ready);
     p

@@ -16,7 +16,7 @@
 #   --negative-close-control   the subject with its close receipt suppressed MUST grade red on close
 #   --subject                  the cell against the subject; ARMED OR RED
 #
-# The subject mounts busbar's doors.rs and is no member of this workspace: it builds only in
+# The subject uses core-connector's public door adapter and builds as a separate test host in
 # testing/conformance/webrtc-browser.sh's overlay against a busbar checkout, which places the binary
 # at SUBJECT_BIN before any subject leg runs.
 #

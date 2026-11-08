@@ -12,7 +12,6 @@ use busbar_plugin_loader::dispatch::{
     load_dropped, load_linked, rendering_of_library, Bind, Called, Dispatcher, Frame, InFrame,
     LinkedRow, OutFrame, Plugin,
 };
-use std::sync::atomic::Ordering;
 #[path = "support/abi.rs"]
 pub mod abi;
 #[path = "support/negative.rs"]
@@ -32,8 +31,8 @@ fn open(p: &Plugin<Transport>) -> Called {
     answer
 }
 fn counts(p: &Plugin<Transport>) -> (u64, u64) {
-    let resumed = p.inner.resumes.load(Ordering::SeqCst);
-    (p.inner.crossings.load(Ordering::SeqCst) - resumed, resumed)
+    let resumed = p.test_invocations().1;
+    (p.test_invocations().0 - resumed, resumed)
 }
 fn call<I: InFrame, O: OutFrame>(
     p: &Plugin<Transport>,
@@ -128,7 +127,10 @@ fn lifecycle(p: &Plugin<Transport>, d: &Dispatcher) -> Vec<String> {
 }
 #[test]
 fn the_linked_and_the_dropped_in_door_are_one_plugin() {
-    let d = Dispatcher::new(Default::default());
+    let d = Dispatcher::new(
+        Default::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let r = row();
     assert_eq!(
         rendering_of_library(&cdylib())

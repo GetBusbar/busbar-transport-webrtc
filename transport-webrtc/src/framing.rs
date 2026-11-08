@@ -118,6 +118,7 @@ impl Piece {
     ///
     /// Session descriptions contain ICE credentials. Keep the returned owner alive across
     /// borrowed crossings, or transfer it into another owner that wipes on release.
+    #[cfg(test)]
     pub fn into_bytes(mut self) -> Zeroizing<Vec<u8>> {
         Zeroizing::new(std::mem::take(&mut self.bytes))
     }
@@ -1379,6 +1380,7 @@ impl Framing {
 
     /// Whether keying material is held un-handed (it is cleared once relayed to the stack).
     #[must_use]
+    #[cfg(test)]
     pub fn holds_keying(&self) -> bool {
         self.relay.iter().any(|f| shim::is_keying(f))
     }

@@ -17,12 +17,12 @@ mod stun;
 #[path = "tests/zeroise_tests.rs"]
 mod zeroise_tests;
 
-pub mod crypto;
-pub mod framing;
-pub mod shim;
+mod crypto;
+mod framing;
+mod shim;
 
 /// The door: the one entry, linked here and exported by the dropped-in build alike.
-pub use door::door;
+pub use door::{door, MACRO_DOOR};
 
 /// The transport axis entry: the row's key, the layers it declares and its door.
 pub mod linked {
@@ -34,3 +34,18 @@ pub mod linked {
     /// Whether this wire carries sessions: yes, an association is one (its claim row's `session`).
     pub const SESSION: bool = crate::meta::SESSION;
 }
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/hot_path_alloc.rs"]
+mod hot_path_alloc;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/zeroise_session_key.rs"]
+mod zeroise_session_key;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/door_ops.rs"]
+mod door_ops;

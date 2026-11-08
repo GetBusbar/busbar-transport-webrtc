@@ -130,10 +130,10 @@ impl Host {
 
 fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: I) -> (Called, O) {
     let mut f = Frame::new(i, conf::output::<O>());
-    let before = p.inner.crossings.load(std::sync::atomic::Ordering::Relaxed);
+    let before = p.test_invocations().0;
     let c = p.call(s, &mut f);
     assert_eq!(
-        p.inner.crossings.load(std::sync::atomic::Ordering::Relaxed) - before,
+        p.test_invocations().0 - before,
         1,
         "exact crossing count for slot {s}"
     );
@@ -291,7 +291,10 @@ fn expected() -> Vec<String> {
 fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
     let row =
         LinkedRow::of(busbar_transport_webrtc::linked::door).expect("the linked door is admitted");
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let stated = rendering_of_library(&conf::cdylib())
         .expect("renders")
         .expect("real exported door");
@@ -324,7 +327,10 @@ fn the_linked_and_the_dropped_in_framer_are_one_plugin_on_one_table() {
 /// A dropped-in library stating a different rendering is refused.
 #[test]
 fn red_arm_a_dropped_in_library_stating_another_statement_is_refused() {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let row = LinkedRow::of(busbar_transport_webrtc::linked::door).expect("real linked door");
     let own = rendering_of_library(&conf::cdylib())
         .expect("renders")

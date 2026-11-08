@@ -4,10 +4,10 @@
 //! The real provider creates and uses AES-128/256-GCM ciphers, then drops their owned state.
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-#[path = "support/provider_alloc.rs"]
+#[path = "../../tests/support/provider_alloc.rs"]
 mod native;
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::Layout;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -117,51 +117,34 @@ fn register_payload(bytes: &[u8], capacity: usize, id: u8, key_len: usize) {
     register(probe.ptr, probe.size, probe.len, id, key_len);
 }
 
-struct Watch;
-
-// SAFETY: allocation calls forward unchanged. Deallocation compares only the registered address
-// and layout in Rust. Only the registered initialized Vec payload is copied through the current
-// deallocation pointer, before System releases it. No retained shared pointer is dereferenced.
-// There are no assertions, metadata allocations or unwinding paths inside the allocator.
-unsafe impl GlobalAlloc for Watch {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller's allocation contract is forwarded unchanged.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _ = PROBE.try_with(|slot| {
-            let Some(probe) = slot.get().filter(|probe| probe.ptr == ptr.addr()) else {
-                return;
-            };
-            slot.set(None);
-            FREED[probe.id].fetch_add(1, Ordering::SeqCst);
-            #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            if layout.size() == probe.size && probe.len <= layout.size() {
-                let _ = READING.try_with(|reading| {
-                    if reading.replace(true) {
-                        return;
-                    }
-                    // SAFETY: this is the actual live deallocation pointer, its layout
-                    // matches the registered allocation, and len is the initialized slice.
-                    let intact = unsafe { observe(ptr, probe) };
-                    reading.set(false);
-                    READ_COMPLETE[probe.id].fetch_add(1, Ordering::SeqCst);
-                    if intact {
-                        FREED_UNZEROED[probe.id].fetch_add(1, Ordering::SeqCst);
-                    }
-                });
-            }
-            #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-            let _ = (layout, probe.size, probe.len, probe.key_len);
-        });
-        // SAFETY: the caller's allocation contract is forwarded unchanged.
-        unsafe { System.dealloc(ptr, layout) }
-    }
+// Called by the shared test allocator before the allocation is released.
+pub(super) unsafe fn on_dealloc(ptr: *mut u8, layout: Layout) {
+    let _ = PROBE.try_with(|slot| {
+        let Some(probe) = slot.get().filter(|probe| probe.ptr == ptr.addr()) else {
+            return;
+        };
+        slot.set(None);
+        FREED[probe.id].fetch_add(1, Ordering::SeqCst);
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if layout.size() == probe.size && probe.len <= layout.size() {
+            let _ = READING.try_with(|reading| {
+                if reading.replace(true) {
+                    return;
+                }
+                // SAFETY: this is the actual live deallocation pointer, its layout
+                // matches the registered allocation, and len is the initialized slice.
+                let intact = unsafe { observe(ptr, probe) };
+                reading.set(false);
+                READ_COMPLETE[probe.id].fetch_add(1, Ordering::SeqCst);
+                if intact {
+                    FREED_UNZEROED[probe.id].fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        }
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        let _ = (layout, probe.size, probe.len, probe.key_len);
+    });
 }
-
-#[global_allocator]
-static WATCH: Watch = Watch;
 
 fn all_freed(id: u8) {
     let id = usize::from(id);
@@ -201,7 +184,7 @@ const PAYLOAD: [u8; 64] = [0x5a; 64];
 
 #[cfg_attr(all(target_os = "linux", target_env = "gnu"), test)]
 fn an_aes_128_gcm_session_key_is_zeroised_when_its_cipher_drops() {
-    let p = busbar_transport_webrtc::crypto::provider();
+    let p = crate::crypto::provider();
     let gcm = SrtpProvider::aead_aes_128_gcm(p.srtp_provider);
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     let capture = native::Capture::start(1, 16);
@@ -235,7 +218,7 @@ fn an_aes_128_gcm_session_key_is_zeroised_when_its_cipher_drops() {
 
 #[cfg_attr(all(target_os = "linux", target_env = "gnu"), test)]
 fn an_aes_256_gcm_session_key_is_zeroised_when_its_cipher_drops() {
-    let p = busbar_transport_webrtc::crypto::provider();
+    let p = crate::crypto::provider();
     let gcm = SrtpProvider::aead_aes_256_gcm(p.srtp_provider);
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     let capture = native::Capture::start(2, 32);

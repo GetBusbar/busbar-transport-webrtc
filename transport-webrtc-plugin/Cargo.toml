@@ -27,5 +27,6 @@ busbar-contract = { workspace = true }
 # THE BOTH-WAYS WITNESS (tests/conformance.rs): the linked door and this crate's built cdylib, each
 # admitted by busbar's real loader, run one script to one transcript (Part 2 #2). Dev-only, never in
 # the shipped artifact. Same pinned rev, so one busbar source resolves.
-busbar-plugin-loader = { workspace = true }
+busbar-plugin-loader = { workspace = true , features = ["test-support"] }
 serde_json = { workspace = true }
+busbar-contract = { workspace = true, features = ["test-seal"] }

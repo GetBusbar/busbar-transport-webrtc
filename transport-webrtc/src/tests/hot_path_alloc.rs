@@ -3,7 +3,6 @@
 
 //! Sealing and opening SRTP packets allocate nothing on the hot path.
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use str0m::crypto::{
@@ -16,30 +15,13 @@ std::thread_local! {
     static COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
-/// The system allocator, counting what the armed thread asks for.
-struct Counting;
-
-// SAFETY: every call is forwarded to `System` with its own arguments; the count is a plain
-// per-thread cell, read and written without allocating.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = ARMED.try_with(|a| {
-            if a.get() {
-                let _ = COUNT.try_with(|c| c.set(c.get() + 1));
-            }
-        });
-        // SAFETY: the caller's contract, forwarded.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: the caller's contract, forwarded.
-        unsafe { System.dealloc(ptr, layout) }
-    }
+pub(super) fn on_alloc() {
+    let _ = ARMED.try_with(|a| {
+        if a.get() {
+            let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+        }
+    });
 }
-
-#[global_allocator]
-static COUNTING: Counting = Counting;
 
 /// How many allocations `f` made on this thread.
 fn allocations<R>(f: impl FnOnce() -> R) -> (usize, R) {
@@ -62,7 +44,7 @@ const NEXT_REPORT_IV: [u8; 12] = [5; 12];
 
 #[test]
 fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
-    let p = busbar_transport_webrtc::crypto::provider();
+    let p = crate::crypto::provider();
     let gcm = SrtpProvider::aead_aes_128_gcm(p.srtp_provider);
     let mut seal = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], true);
     let mut open = SupportedAeadAes128Gcm::create_cipher(gcm, [9; 16], false);
@@ -124,7 +106,7 @@ fn opening_and_sealing_an_srtp_packet_allocates_nothing() {
 
 #[test]
 fn a_forged_packet_is_refused_and_leaves_no_plaintext() {
-    let p = busbar_transport_webrtc::crypto::provider();
+    let p = crate::crypto::provider();
     let gcm = SrtpProvider::aead_aes_256_gcm(p.srtp_provider);
     let mut seal = SupportedAeadAes256Gcm::create_cipher(gcm, [4; 32], true);
     let mut open = SupportedAeadAes256Gcm::create_cipher(gcm, [4; 32], false);

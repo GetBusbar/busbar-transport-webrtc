@@ -110,6 +110,7 @@ fn no_settings(settings: &[u8]) -> Result<(), Refusal> {
 }
 
 impl Life for Framings {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     /// No framer op pends, so a cancel finds nothing in flight.
     const CANCEL: u32 = CANCEL_NOTHING_MOVED;
 
@@ -188,7 +189,10 @@ fn refused(t: &OpTexts, why: &str) -> Refusal {
     Refusal::failed(format!("{}{why}", t.prefix))
 }
 
-fn framings<'a>(i: &Instance<'a, State>, t: &OpTexts) -> Result<&'a Framings, Refusal> {
+fn framings<'a>(
+    i: &Instance<'a, State, busbar_contract::plugin::markers::TransportKind>,
+    t: &OpTexts,
+) -> Result<&'a Framings, Refusal> {
     i.get()
         .map(Held::life)
         .ok_or_else(|| Refusal::failed(t.no_instance))
@@ -375,7 +379,7 @@ fn answer(
 /// returns OR-ed into the answer's own. A failed framing, or an `op` or answer that errs, forgets
 /// the association and fails the call.
 fn with(
-    inst: &Instance<'_, State>,
+    inst: &Instance<'_, State, busbar_contract::plugin::markers::TransportKind>,
     t: &OpTexts,
     token: u64,
     sink: Lent<'_, FramerSink>,
@@ -490,10 +494,15 @@ fn certificate<'a>(i: &Lent<'a, BeginIn>) -> Option<&'a [u8]> {
 /// `begin`: an accepting framing waits for the offer; a dialling one yields its offer now.
 pub(crate) struct Begin;
 impl SafeSlot for Begin {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = BeginIn;
     type Out = FramerOut;
     type State = State;
-    fn call(inst: Instance<'_, State>, i: Lent<'_, BeginIn>, mut o: Out<'_, FramerOut>) -> Outcome {
+    fn call(
+        inst: Instance<'_, State, busbar_contract::plugin::markers::TransportKind>,
+        i: Lent<'_, BeginIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         let s = match framings(&inst, &BEGIN) {
             Ok(s) => s,
             Err(r) => return o.fail(r),
@@ -553,11 +562,12 @@ impl SafeSlot for Begin {
 /// `ingest`: one datagram, or the far end's description.
 pub(crate) struct Ingest;
 impl SafeSlot for Ingest {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = IngestIn;
     type Out = FramerOut;
     type State = State;
     fn call(
-        inst: Instance<'_, State>,
+        inst: Instance<'_, State, busbar_contract::plugin::markers::TransportKind>,
         i: Lent<'_, IngestIn>,
         mut o: Out<'_, FramerOut>,
     ) -> Outcome {
@@ -602,10 +612,15 @@ impl SafeSlot for Ingest {
 /// `emit`: a message's pieces, gathered; its last piece sends it.
 pub(crate) struct Emit;
 impl SafeSlot for Emit {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = EmitIn;
     type Out = FramerOut;
     type State = State;
-    fn call(inst: Instance<'_, State>, i: Lent<'_, EmitIn>, mut o: Out<'_, FramerOut>) -> Outcome {
+    fn call(
+        inst: Instance<'_, State, busbar_contract::plugin::markers::TransportKind>,
+        i: Lent<'_, EmitIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         if i.flags & !EMIT_TEXT != 0 {
             return o.fail(Refusal::refused(
                 "emit: the webrtc framer does not support these flags",
@@ -686,11 +701,12 @@ fn emit(
 /// `timer`: the deadline the framing asked for passed.
 pub(crate) struct Timer;
 impl SafeSlot for Timer {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = FramingIn;
     type Out = FramerOut;
     type State = State;
     fn call(
-        inst: Instance<'_, State>,
+        inst: Instance<'_, State, busbar_contract::plugin::markers::TransportKind>,
         i: Lent<'_, FramingIn>,
         mut o: Out<'_, FramerOut>,
     ) -> Outcome {
@@ -712,11 +728,12 @@ impl SafeSlot for Timer {
 /// `finish`: close and drain the association, retaining its token until all output is answered.
 pub(crate) struct Finish;
 impl SafeSlot for Finish {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = FinishIn;
     type Out = FramerOut;
     type State = State;
     fn call(
-        inst: Instance<'_, State>,
+        inst: Instance<'_, State, busbar_contract::plugin::markers::TransportKind>,
         i: Lent<'_, FinishIn>,
         mut o: Out<'_, FramerOut>,
     ) -> Outcome {

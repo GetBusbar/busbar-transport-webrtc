@@ -16,15 +16,8 @@ use busbar_core_connector::framer::{FramerDoor, Got};
 use busbar_core_connector::udp::{bind, ReadyPort, MAX_DATAGRAM};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[allow(dead_code)]
-#[path = "../../../../crates/busbar/src/root/doors.rs"]
-mod doors;
-
-/// The loader, as the mounted doors reach it (`super::loader`).
-#[allow(unused_imports)]
-mod loader {
-    pub use busbar_plugin_loader::*;
-}
+use busbar_core_connector::doors;
+use busbar_plugin_loader as loader;
 
 /// The cell's page.
 const PAGE: &str = include_str!("../../page/index.html");
@@ -43,7 +36,7 @@ enum Break {
 /// The `webrtc` door, admitted through the one dispatcher under its row's name and opened.
 fn door() -> Arc<dyn FramerDoor> {
     use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
-    let key = busbar_transport_webrtc::linked::KEY;
+    let key = "webrtc";
     let plugin = doors::row_bind(key)
         .and_then(|bind| {
             LinkedRow::of(busbar_transport_webrtc::door)
@@ -151,7 +144,7 @@ async fn serve_port(port: Rc<RefCell<Port>>) {
         let mut p = port.borrow_mut();
         for (id, answer) in answered {
             match answer {
-                Ok(y) => p.echo(id, y.pieces, now),
+                Ok(mut y) => p.echo(id, std::mem::take(&mut y.pieces), now),
                 Err(e) => eprintln!("webrtc-conformance-subject: association {id} failed: {e}"),
             }
         }
@@ -228,7 +221,7 @@ fn answer(
     let (mut f, _) =
         DatagramFraming::accept(Arc::clone(framer), cert, local).map_err(|r| r.error)?;
     let now = Instant::now();
-    let y = f.rendezvous(offer, now).map_err(|r| r.error)?;
+    let mut y = f.rendezvous(offer, now).map_err(|r| r.error)?;
     let description = y
         .pieces
         .iter()
@@ -237,7 +230,7 @@ fn answer(
         .ok_or("the framer answered no description")?;
     let mut p = port.borrow_mut();
     let id = p.assocs.add(f).map_err(|e| format!("{e:?}"))?;
-    p.echo(id, y.pieces, now);
+    p.echo(id, std::mem::take(&mut y.pieces), now);
     Ok((description, id))
 }
 

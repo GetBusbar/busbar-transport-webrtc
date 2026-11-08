@@ -148,11 +148,14 @@ fn observe(payload: &Payload) -> Option<bool> {
 // typed/padding read is made. No allocator path asserts, allocates metadata or unwinds.
 unsafe impl GlobalAlloc for Watch {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        crate::hot_path_alloc::on_alloc();
         // SAFETY: the caller's allocation contract is forwarded unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: observers receive the same still-live allocation and layout.
+        unsafe { crate::zeroise_session_key::on_dealloc(ptr, layout) };
         let _ = PAYLOADS.try_with(|p| {
             let payload = {
                 let Ok(mut payloads) = p.try_borrow_mut() else {

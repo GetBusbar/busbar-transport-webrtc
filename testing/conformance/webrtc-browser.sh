@@ -7,8 +7,8 @@
 # must grade red on media alone) and SUBJECT (armed or red). Pass only when all three hold.
 #
 # The subject builds on the host against $BUSBAR_CHECKOUT through a run-time overlay workspace (the
-# subject mounts busbar's doors.rs by path and is not a workspace member, so it cannot build in
-# place; nothing is committed). The browsers run in the official Playwright image pinned by digest,
+# subject is a separate test host using core-connector's public door adapter, not a shipping
+# workspace member; nothing is committed). The browsers run in the official Playwright image pinned by digest,
 # on the host network, so they reach the subject at the host's first non-loopback IPv4.
 # Needs CONFORMANCE_OUT, BUSBAR_CHECKOUT, CARGO_TARGET_DIR (run.sh provides them).
 set -uo pipefail
@@ -60,11 +60,9 @@ sub = open(f"{ws}/subject/Cargo.toml").read()
 sub = sub.replace("busbar-transport-webrtc = { workspace = true }",
                   f'busbar-transport-webrtc = {{ path = "{repo}/transport-webrtc" }}')
 open(f"{ws}/subject/Cargo.toml", "w").write(sub)
-src = open(f"{ws}/subject/src/main.rs").read()
-src = src.replace("../../../../crates/busbar/src/root/doors.rs", f"{bc}/crates/busbar/src/root/doors.rs")
-open(f"{ws}/subject/src/main.rs", "w").write(src)
+
 PY
-cp "$REPO/Cargo.lock" "$W/ws/Cargo.lock"
+cp "$BC/Cargo.lock" "$W/ws/Cargo.lock"
 # The page the subject embeds is found relative to src/main.rs.
 mkdir -p "$W/ws/page" && cp "$H/page/index.html" "$W/ws/page/index.html"
 
