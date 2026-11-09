@@ -57,7 +57,7 @@ for n, d in names.items():
     root += f'{n} = {{ path = "{bc}/crates/{d}" }}\n'
 open(f"{ws}/Cargo.toml", "w").write(root)
 sub = open(f"{ws}/subject/Cargo.toml").read()
-sub = sub.replace("busbar-transport-webrtc = { workspace = true }",
+sub = sub.replace('busbar-transport-webrtc = { path = "../../../transport-webrtc" }',
                   f'busbar-transport-webrtc = {{ path = "{repo}/transport-webrtc" }}')
 open(f"{ws}/subject/Cargo.toml", "w").write(sub)
 

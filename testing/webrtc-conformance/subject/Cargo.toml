@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "a29e8974a5e5ceff78841bd1bc851d182c0f2965" }
-busbar-transport-webrtc = { workspace = true }
+busbar-transport-webrtc = { path = "../../../transport-webrtc" }
 busbar-core-connector = { git = "https://github.com/GetBusbar/busbar", rev = "a29e8974a5e5ceff78841bd1bc851d182c0f2965" }
 busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "a29e8974a5e5ceff78841bd1bc851d182c0f2965" }
 serde_json = { workspace = true }
