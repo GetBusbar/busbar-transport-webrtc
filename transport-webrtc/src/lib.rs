@@ -49,3 +49,6 @@ mod zeroise_session_key;
 #[allow(unsafe_code)]
 #[path = "tests/door_ops.rs"]
 mod door_ops;
+
+// Source-owned integration tests are compiled only by the assembling host test harness.
+include!(concat!(env!("OUT_DIR"), "/context_test_source.rs"));
