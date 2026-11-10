@@ -13,7 +13,9 @@ use str0m::crypto::{
     Sha1HmacProvider, Sha256Provider, SrtpProvider, SupportedAeadAes128Gcm, SupportedAeadAes256Gcm,
     SupportedAes128CmSha1_80,
 };
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroize as _;
+#[cfg(test)]
+use zeroize::Zeroizing;
 
 /// The provider. It holds nothing: every reference to it is a promoted constant, never a `static`
 /// (a plugin holds no process-global state).
@@ -98,8 +100,8 @@ fn ecb_round<C: KeyInit + BlockEncrypt>(key: &[u8], input: &[u8], output: &mut [
 }
 
 impl SupportedAes128CmSha1_80 for Ring {
-    fn create_cipher(&self, key: [u8; 16], _encrypt: bool) -> Box<dyn Aes128CmSha1_80Cipher> {
-        let _ = Zeroizing::new(key);
+    fn create_cipher(&self, mut key: [u8; 16], _encrypt: bool) -> Box<dyn Aes128CmSha1_80Cipher> {
+        key.zeroize();
         Box::new(AesCmRefused)
     }
 }
@@ -402,22 +404,24 @@ impl AeadAes256GcmCipher for Unkeyed {
 }
 
 impl SupportedAeadAes128Gcm for Ring {
-    fn create_cipher(&self, key: [u8; 16], _encrypt: bool) -> Box<dyn AeadAes128GcmCipher> {
-        let key = Zeroizing::new(key);
-        match Gcm::new(&AES_128_GCM, key.as_slice()) {
+    fn create_cipher(&self, mut key: [u8; 16], _encrypt: bool) -> Box<dyn AeadAes128GcmCipher> {
+        let cipher: Box<dyn AeadAes128GcmCipher> = match Gcm::new(&AES_128_GCM, &key) {
             Some(c) => Box::new(c),
             None => Box::new(Unkeyed),
-        }
+        };
+        key.zeroize();
+        cipher
     }
 }
 
 impl SupportedAeadAes256Gcm for Ring {
-    fn create_cipher(&self, key: [u8; 32], _encrypt: bool) -> Box<dyn AeadAes256GcmCipher> {
-        let key = Zeroizing::new(key);
-        match Gcm::new(&AES_256_GCM, key.as_slice()) {
+    fn create_cipher(&self, mut key: [u8; 32], _encrypt: bool) -> Box<dyn AeadAes256GcmCipher> {
+        let cipher: Box<dyn AeadAes256GcmCipher> = match Gcm::new(&AES_256_GCM, &key) {
             Some(c) => Box::new(c),
             None => Box::new(Unkeyed),
-        }
+        };
+        key.zeroize();
+        cipher
     }
 }
 

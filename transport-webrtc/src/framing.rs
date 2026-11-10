@@ -83,7 +83,7 @@ pub enum Lane {
 }
 
 /// One datagram for the host to send.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Route {
     /// Its bytes.
     pub bytes: Vec<u8>,
@@ -91,6 +91,16 @@ pub struct Route {
     pub path: u32,
     /// Its lane.
     pub lane: Lane,
+}
+
+impl std::fmt::Debug for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Route")
+            .field("len", &self.bytes.len())
+            .field("path", &self.path)
+            .field("lane", &self.lane)
+            .finish()
+    }
 }
 
 /// One piece for the layer above.
