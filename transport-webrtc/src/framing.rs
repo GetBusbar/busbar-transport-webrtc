@@ -328,7 +328,7 @@ fn transport_description(description: &str) -> Zeroizing<String> {
         normalized.push_str("\r\n");
     }
     for line in first_media.lines().filter(|line| overridden(line)) {
-        normalized.push_str(line);
+        normalized.push_str(line.trim_end_matches('\r'));
         normalized.push_str("\r\n");
     }
     normalized.push_str(media);
