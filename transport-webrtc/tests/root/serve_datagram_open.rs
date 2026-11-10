@@ -183,7 +183,7 @@ async fn deployment(instance: &'static str) -> Deployment {
             .expect("assembled plane has a valid kind declaration");
         (facts.served.section == "streams").then_some(*door)
     });
-    let peer = peers
+    let plane_door = peers
         .next()
         .expect("the assembly supplies the streams plane peer");
     assert!(
@@ -191,7 +191,7 @@ async fn deployment(instance: &'static str) -> Deployment {
         "the streams plane peer is unambiguous"
     );
     let plane = load_linked::<Plane>(
-        &LinkedRow::of(peer).unwrap(),
+        &LinkedRow::of(plane_door).unwrap(),
         Bind {
             instance: Arc::from(instance),
             max_inflight_cap: 64,
