@@ -178,8 +178,20 @@ async fn deployment(instance: &'static str) -> Deployment {
         busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    let mut peers = crate::LINKED.plane_doors.iter().filter_map(|door| {
+        let (_, facts) = crate::root::loader::dispatch::kinds::plane::stated_facts(*door)
+            .expect("assembled plane has a valid kind declaration");
+        (facts.served.section == "streams").then_some(*door)
+    });
+    let peer = peers
+        .next()
+        .expect("the assembly supplies the streams plane peer");
+    assert!(
+        peers.next().is_none(),
+        "the streams plane peer is unambiguous"
+    );
     let plane = load_linked::<Plane>(
-        &LinkedRow::of(busbar_plane_streaming::door).unwrap(),
+        &LinkedRow::of(peer).unwrap(),
         Bind {
             instance: Arc::from(instance),
             max_inflight_cap: 64,
