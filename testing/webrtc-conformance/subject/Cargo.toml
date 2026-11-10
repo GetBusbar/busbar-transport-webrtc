@@ -18,9 +18,9 @@ name = "webrtc-conformance-subject"
 path = "src/main.rs"
 
 [dependencies]
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "17e2ae73352280303cb3cd7a33e87c03e4b5100d" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "f0f8155028d63b5cd72125cf679aff1912fcca61" }
 busbar-transport-webrtc = { path = "../../../transport-webrtc" }
-busbar-core-connector = { git = "https://github.com/GetBusbar/busbar", rev = "17e2ae73352280303cb3cd7a33e87c03e4b5100d" }
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "17e2ae73352280303cb3cd7a33e87c03e4b5100d" }
+busbar-core-connector = { git = "https://github.com/GetBusbar/busbar", rev = "f0f8155028d63b5cd72125cf679aff1912fcca61" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "f0f8155028d63b5cd72125cf679aff1912fcca61" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
