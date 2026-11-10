@@ -41,3 +41,8 @@ jsonschema = { workspace = true }
 busbar-contract = { workspace = true, features = ["test-seal", "test-support"] }
 libc = { workspace = true }
 busbar-plugin-loader = { workspace = true, features = ["test-support"] }
+
+[package.metadata.busbar.test-contexts]
+datagram_wire = [{ path = "tests/root/serve_datagram.rs" }]
+datagram_lifecycle = [{ path = "tests/root/datagram_opening_retirement.rs", module = "opening_retirement_tests" }, { path = "tests/root/datagram_line_budget.rs", module = "line_budget_tests" }, { path = "tests/root/raw_udp_ingress.rs", module = "raw_udp_ingress_tests" }]
+money_datagram = [{ path = "tests/root/serve_datagram_open.rs", module = "datagram_opening_tests" }]
