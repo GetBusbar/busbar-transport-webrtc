@@ -82,7 +82,8 @@ struct Held1 {
 
 impl Held1 {
     fn at(&self, ns: u64) -> Instant {
-        self.base + Duration::from_nanos(ns.saturating_sub(self.base_ns))
+        let d = Duration::from_nanos(ns.saturating_sub(self.base_ns));
+        self.base.checked_add(d).unwrap_or(self.base)
     }
 
     fn ns(&self, t: Instant) -> u64 {

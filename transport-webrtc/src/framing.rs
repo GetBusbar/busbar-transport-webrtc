@@ -384,7 +384,9 @@ fn read_remote(description: &str) -> Result<Remote, Failed> {
 /// exactly one of its lower-case words (it skips any other spelling, and the host must agree with
 /// the role it takes).
 fn initiates(description: &str) -> bool {
-    values(description, "a=setup:").find(|v| matches!(*v, "actpass" | "active" | "passive"))
+    values(description, "a=setup:")
+        .map(str::trim)
+        .find(|v| matches!(*v, "actpass" | "active" | "passive"))
         == Some("passive")
 }
 
@@ -718,6 +720,7 @@ impl Framing {
             .local
             .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
         let Ok(receive) = Receive::new(Protocol::Udp, at, at, frame) else {
+            self.fail("the media stack refused the relay frame".into());
             return;
         };
         if let Err(e) = self.rtc.handle_input(Input::Receive(now, receive)) {
@@ -847,6 +850,9 @@ impl Framing {
                 return Ok(());
             }
             if !(self.verified && self.keyed) || self.failed_sids.contains(&stream) {
+                return Ok(());
+            }
+            if self.rtc.writer(mid).is_none() {
                 return Ok(());
             }
             let clock = self.media_clock.entry(stream).or_insert(0);
@@ -991,6 +997,9 @@ impl Framing {
     }
 
     fn fail(&mut self, why: Failed) {
+        if self.failed.is_some() {
+            return;
+        }
         self.rtc.disconnect();
         self.failed = Some(why);
         self.routes.clear();
