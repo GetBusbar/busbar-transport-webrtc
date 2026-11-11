@@ -16,7 +16,7 @@
 //   --selftest                                    the judgement bites (no browser)
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 export const BROWSERS = ["chromium", "firefox"];
 export const CELLS = [
@@ -29,6 +29,11 @@ export const CELLS = [
   "close",
 ];
 const PREFIX = "webrtc-conformance: ";
+
+// Preserve actionable browser stderr, while bounding native evidence size.
+function launchDiagnostic(error) {
+  return Buffer.from(String(error?.message ?? error)).subarray(0, 16384).toString("utf8");
+}
 
 /** The verdict a run's lines earn: every browser, every cell, PASS; a browser that did not launch,
  *  or an unarmed subject, is not-run, never pass, unless a browser that did launch graded a cell
@@ -82,6 +87,9 @@ function selftest() {
   const all = (browser, result) => CELLS.map((c) => `${PREFIX}${browser} ${c} ${result} x`);
   const good = [...all("chromium", "PASS"), ...all("firefox", "PASS")];
   const checks = [
+    ["launch diagnostics retain the underlying multiline error",
+      launchDiagnostic(new Error("launch failed\nmissing native dependency")) === "launch failed\nmissing native dependency"],
+    ["launch diagnostics are bounded", launchDiagnostic(new Error("x".repeat(20000))).length === 16384],
     ["good lines pass", judge(good, true).status === "pass"],
     ["unarmed never passes", judge(good, false).status === "not-run"],
     ["one failed cell fails", judge(good.map((l, i) => (i === 4 ? l.replace(" PASS ", " FAIL ") : l)), true).status === "fail"],
@@ -149,6 +157,10 @@ async function drive(url, mode, out) {
     try {
       browser = await launch[b]();
     } catch (e) {
+      const diagnostic = launchDiagnostic(e);
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(join(dirname(out), `${b}-launch.log`), diagnostic + "\n");
+      console.error(`${PREFIX}${b} launch diagnostics:\n${diagnostic}`);
       say(`${PREFIX}${b} launch FAIL ${String(e.message).split("\n")[0]}`);
       continue;
     }

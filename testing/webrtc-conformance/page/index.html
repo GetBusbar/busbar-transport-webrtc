@@ -61,10 +61,28 @@ async function inboundAudio(pc) {
   return { packets, mime };
 }
 
+// Connection failures need candidate evidence, without SDP credentials or ICE passwords.
+async function connectionFailure(pc) {
+  let detail = "connectionState " + pc.connectionState + ", ice " + pc.iceConnectionState +
+    ", gathering " + pc.iceGatheringState;
+  try {
+    const candidates = [];
+    (await pc.getStats()).forEach((stat) => {
+      if (stat.type === "local-candidate" || stat.type === "remote-candidate") {
+        candidates.push([stat.type, stat.candidateType, stat.protocol, stat.address, stat.port].join("/"));
+      }
+    });
+    detail += ", candidates " + (candidates.length ? candidates.join("; ") : "none");
+  } catch {
+    detail += ", candidate diagnostics unavailable";
+  }
+  return detail;
+}
+
 // The channel and media cells over one connection whose far end echoes.
 async function gradeEcho(pc, dc, cells) {
   if (!(await waitFor(() => pc.connectionState === "connected", 15000))) {
-    cells["connected"] = bad("connectionState " + pc.connectionState);
+    cells["connected"] = bad(await connectionFailure(pc));
     return;
   }
   cells["connected"] = ok("connected");

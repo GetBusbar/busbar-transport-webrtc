@@ -52,3 +52,32 @@ test("subject END receipt passes after requesting data-channel closure", async (
   assert.equal(channelClosed, true);
   assert.equal(receiptRequests, 1);
 });
+
+
+test("failed ICE exposes candidate diagnostics without SDP credentials", async () => {
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(script, context);
+  const peer = {
+    connectionState: "failed", iceConnectionState: "failed", iceGatheringState: "complete",
+    localDescription: { sdp: "a=ice-pwd:must-not-appear" },
+    getStats: async () => new Map([["candidate", {
+      type: "local-candidate", candidateType: "host", protocol: "udp", address: "127.0.0.1", port: 12345,
+      usernameFragment: "must-not-appear",
+    }]]),
+  };
+  const detail = await context.connectionFailure(peer);
+  assert.match(detail, /ice failed, gathering complete/);
+  assert.match(detail, /local-candidate\/host\/udp\/127.0.0.1\/12345/);
+  assert.doesNotMatch(detail, /must-not-appear/);
+});
+
+test("a diagnostic error does not replace the original connection failure", async () => {
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(script, context);
+  const detail = await context.connectionFailure({
+    connectionState: "failed", iceConnectionState: "failed", iceGatheringState: "complete",
+    getStats: async () => { throw Error("stats unavailable"); },
+  });
+  assert.match(detail, /^connectionState failed/);
+  assert.match(detail, /candidate diagnostics unavailable/);
+});

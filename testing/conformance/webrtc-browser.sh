@@ -91,7 +91,8 @@ leg() { # <name> <run.sh mode>
   say "=== leg $1"
   local rc=0
   bash "$H/scripts/run.sh" "$2" >"$W/leg.log" 2>&1 || rc=$?
-  cat "$W/leg.log" | tee -a "$LOG" | tail -n 25 >&2
+  # Native artifacts retain this stderr; include bounded underlying launch errors.
+  tee -a "$LOG" <"$W/leg.log" | tail -c 65536 >&2
   say "leg $1: exit $rc"
   case "$rc" in
     0) ;;

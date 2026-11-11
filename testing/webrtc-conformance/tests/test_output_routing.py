@@ -56,6 +56,9 @@ import json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 if args and args[0].endswith('/bin/drive.mjs') and '--url' in args:
+    if os.environ.get('TEST_BROWSER_DIAGNOSTIC'):
+        print('underlying browser launch diagnostic', file=sys.stderr)
+        print('\\n'.join('diagnostic context ' + str(index) for index in range(30)), file=sys.stderr)
     output = Path(args[args.index('--out') + 1])
     output.mkdir(parents=True, exist_ok=True)
     negative = output.name.startswith('negative-')
@@ -129,7 +132,9 @@ os.execv(os.environ['TEST_REAL_NODE'], [os.environ['TEST_REAL_NODE'], *args])
         output = self.work / "declared conformance output"
         output.mkdir()
         self.environment["CONFORMANCE_OUT"] = str(output)
-        self.run_script("testing/conformance/webrtc-browser.sh")
+        self.environment["TEST_BROWSER_DIAGNOSTIC"] = "1"
+        result = self.run_script("testing/conformance/webrtc-browser.sh")
+        self.assertIn("underlying browser launch diagnostic", result.stderr)
         self.assert_reports(output / "reports")
         verdict = json.loads((output / "verdict.json").read_text())
         self.assertEqual(verdict["status"], "pass")
