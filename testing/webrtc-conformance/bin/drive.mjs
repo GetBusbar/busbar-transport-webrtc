@@ -146,6 +146,9 @@ async function drive(url, mode, out) {
           "media.peerconnection.ice.loopback": true,
           "media.navigator.streams.fake": true,
           "media.navigator.permission.disabled": true,
+          // Fake capture must count as permitted capture for Firefox's ICE
+          // address policy; otherwise it requires a non-loopback default route.
+          "media.navigator.permission.fake": true,
           "dom.securecontext.allowlist": origin.hostname,
           "media.devices.insecure.enabled": true,
           "media.getusermedia.insecure.enabled": true,

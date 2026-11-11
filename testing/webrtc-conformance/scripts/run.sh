@@ -109,7 +109,13 @@ drive() {
   # $1: page mode (cell|control); $2: report tag. A leg is judged only on its own fresh verdict.
   rm -rf "${REPORTS_DIR:?}/$2"
   mkdir -p "$REPORTS_DIR/$2"
-  node "$DRIVE" --url "$SUBJECT_URL" --mode "$1" --out "$REPORTS_DIR/$2"
+  # The confined candidate's /tmp is its own bounded tmpfs. Its short path is
+  # needed for Chromium's AF_UNIX SingletonSocket (sun_path is only 108 bytes);
+  # the build workspace TMPDIR can exceed that before Chromium adds its suffix.
+  local browser_tmp
+  browser_tmp="$(mktemp -d /tmp/wrtc.XXXXXX)"
+  SCRATCH+=("$browser_tmp")
+  TMPDIR="$browser_tmp" node "$DRIVE" --url "$SUBJECT_URL" --mode "$1" --out "$REPORTS_DIR/$2"
 }
 
 case "$mode" in

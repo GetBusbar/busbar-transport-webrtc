@@ -61,6 +61,10 @@ if args and args[0].endswith('/bin/drive.mjs') and '--url' in args:
         print('\\n'.join('diagnostic context ' + str(index) for index in range(30)), file=sys.stderr)
     output = Path(args[args.index('--out') + 1])
     output.mkdir(parents=True, exist_ok=True)
+    temporary = Path(os.environ['TMPDIR'])
+    (output / 'browser-temp.json').write_text(json.dumps({
+        'path': str(temporary), 'mode': temporary.stat().st_mode & 0o777,
+        'socket_path_bytes': len(os.fsencode(temporary / 'org.chromium.Chromium.ABC123/SingletonSocket'))}))
     negative = output.name.startswith('negative-')
     browsers = {name: {'channel-text': {'pass': True},
                       'media-round-trip': {'pass': output.name != 'negative-control'},
@@ -87,6 +91,11 @@ os.execv(os.environ['TEST_REAL_NODE'], [os.environ['TEST_REAL_NODE'], *args])
                                 CONTROLLED_SUBJECT=str(self.subject), TEST_REAL_NODE=shutil.which("node"),
                                 TMPDIR=str(self.work))
         self.environment.pop("CONFORMANCE_OUT", None)
+        # Reproduce the long inherited CI workspace path independently of the
+        # short browser-only TMPDIR allocated by the runner.
+        inherited_tmp = self.work / ("candidate-workspace-" * 6)
+        inherited_tmp.mkdir()
+        self.environment["TMPDIR"] = str(inherited_tmp)
         self.original = self.source_digest()
         for path in self.source.rglob("*"):
             path.chmod(0o555 if path.is_dir() or path.stat().st_mode & 0o111 else 0o444)
@@ -124,9 +133,17 @@ os.execv(os.environ['TEST_REAL_NODE'], [os.environ['TEST_REAL_NODE'], *args])
         return result
 
     def assert_reports(self, reports):
+        temporary_paths = set()
         for tag in TAGS:
             verdict = json.loads((reports / tag / "verdict.json").read_text())
             self.assertEqual(verdict["status"], "fail" if tag.startswith("negative-") else "pass")
+            temporary = json.loads((reports / tag / "browser-temp.json").read_text())
+            self.assertTrue(temporary["path"].startswith("/tmp/wrtc."))
+            self.assertLess(temporary["socket_path_bytes"], 108)
+            self.assertEqual(temporary["mode"], 0o700)
+            self.assertFalse(Path(temporary["path"]).exists(), "browser scratch was not cleaned")
+            temporary_paths.add(temporary["path"])
+        self.assertEqual(len(temporary_paths), len(TAGS), "browser legs reused scratch")
 
     def test_adapter_keeps_all_legs_in_declared_output(self):
         output = self.work / "declared conformance output"
