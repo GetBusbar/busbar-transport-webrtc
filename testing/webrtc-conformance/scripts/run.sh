@@ -9,7 +9,6 @@
 # MODES
 #   --selftest                 the judgement and the page's close cell bite on captured fixtures
 #                              (no browser, no subject)
-#   --install                  fetch the pinned browsers (npx playwright install chromium firefox)
 #   --control                  the page's own control (the browser against itself) must PASS
 #   --negative-control         the subject with its line echo broken MUST grade red on media alone,
 #                              then --negative-close-control
@@ -21,8 +20,7 @@
 # at SUBJECT_BIN before any subject leg runs.
 #
 # Browsers are the instrument: a browser that does not launch makes a leg exit 3 (not-run), never
-# a pass. The subject binds the host's first non-loopback IPv4 address (WEBRTC_SUBJECT_HOST
-# overrides it), the one candidate its answer advertises.
+# a pass. The subject advertises candidate-private loopback for signaling and ICE.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
@@ -64,15 +62,8 @@ selftest() {
 }
 
 host() {
-  if [ -n "${WEBRTC_SUBJECT_HOST:-}" ]; then
-    echo "$WEBRTC_SUBJECT_HOST"
-    return
-  fi
-  local ip=""
-  if command -v hostname >/dev/null 2>&1; then
-    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | head -n1 || true)"
-  fi
-  echo "${ip:-127.0.0.1}"
+  # Subject signaling, ICE and browser traffic stay in the candidate namespace.
+  echo 127.0.0.1
 }
 
 # Start the subject with "$@"; sets SUBJECT_PID and SUBJECT_URL.
@@ -120,9 +111,6 @@ drive() {
 
 case "$mode" in
   --selftest) selftest ;;
-  --install)
-    (cd "$ROOT" && npx --no-install playwright install chromium firefox)
-    ;;
   --control)
     start_subject
     drive control control
@@ -172,7 +160,7 @@ case "$mode" in
     drive cell subject
     ;;
   *)
-    echo "usage: $0 --selftest|--install|--control|--negative-control|--negative-close-control|--subject" >&2
+    echo "usage: $0 --selftest|--control|--negative-control|--negative-close-control|--subject" >&2
     exit 2
     ;;
 esac

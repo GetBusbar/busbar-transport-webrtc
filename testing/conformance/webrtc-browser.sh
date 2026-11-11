@@ -8,12 +8,12 @@
 #
 # The subject builds on the host against $BUSBAR_CHECKOUT through a run-time overlay workspace (the
 # subject is a separate test host using core-connector's public door adapter, not a shipping
-# workspace member; nothing is committed). The browsers run in the official Playwright image pinned by digest,
-# on the host network, so they reach the subject at the host's first non-loopback IPv4.
+# workspace member; nothing is committed). The original digest-pinned Playwright browsers run
+# from a read-only offline bundle in the same candidate-private network namespace.
 # Needs CONFORMANCE_OUT, BUSBAR_CHECKOUT, CARGO_TARGET_DIR (run.sh provides them).
 set -uo pipefail
 
-IMAGE="mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f"
+BROWSER_TOOLS=/opt/busbar-conformance/webrtc
 PW_VERSION="$(python3 -I -c 'import json;print(json.load(open("testing/webrtc-conformance/package.json"))["devDependencies"]["playwright"])')"
 REPO="$(pwd)"
 H="$REPO/testing/webrtc-conformance"
@@ -78,27 +78,15 @@ if [ "$TARGET/debug/webrtc-conformance-subject" != "$REPO/target/debug/webrtc-co
   cp "$TARGET/debug/webrtc-conformance-subject" "$REPO/target/debug/webrtc-conformance-subject"
 fi
 
-# ---- the browsers: node shim that runs bin/drive.mjs's browser legs in the pinned image ----
-command -v docker >/dev/null || { verdict not-run true "docker is not available for the browser image"; exit 3; }
-mkdir -p "$W/pw" "$W/shim"
-cp "$H/package.json" "$H/package-lock.json" "$W/pw/"
-if ! docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$W/pw:/pw" -w /pw "$IMAGE" npm ci --ignore-scripts --no-audit --no-fund >>"$LOG" 2>&1; then
-  verdict not-run true "npm ci of the locked Playwright $PW_VERSION failed in the browser image"
-  exit 3
+# ---- the browsers: immutable, pinned offline tools in this candidate namespace ----
+if [ ! -f "$BROWSER_TOOLS/node_modules/playwright/index.mjs" ] || \
+   [ ! -x "$BROWSER_TOOLS/bin/chromium" ] || [ ! -x "$BROWSER_TOOLS/bin/firefox" ]; then
+  verdict fail true "controller-staged pinned offline browser bundle is unavailable"
+  exit 1
 fi
-cat >"$W/shim/node" <<SHIM
-#!/usr/bin/env bash
-# Browser legs (drive.mjs --url ...) run in the Playwright image; everything else is plain node.
-case " \$* " in
-  *"drive.mjs"*" --url "*)
-    exec docker run --rm --network host --ipc=host --init --user "\$(id -u):\$(id -g)" -e HOME=/tmp \\
-      -v "$REPO:$REPO" -v "$W/pw/node_modules:$H/node_modules:ro" -w "$H" \\
-      "$IMAGE" node "\$@" ;;
-  *) exec "$REAL_NODE" "\$@" ;;
-esac
-SHIM
-chmod +x "$W/shim/node"
-export PATH="$W/shim:$PATH"
+export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_TOOLS/browsers"
+# The subject and browsers share only the candidate's private loopback namespace.
+export WEBRTC_SUBJECT_HOST=127.0.0.1
 
 # ---- the three legs, through the repo's own run.sh ----
 rm -rf "$H/reports"

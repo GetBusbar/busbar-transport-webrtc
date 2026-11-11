@@ -102,7 +102,7 @@ function selftest() {
 async function drive(url, mode, out) {
   let pw;
   try {
-    pw = await import("playwright");
+    pw = await import("/opt/busbar-conformance/webrtc/node_modules/playwright/index.mjs");
   } catch (e) {
     const v = { armed: true, status: "not-run", reason: `playwright is not installed: ${e.message}`, browsers: {} };
     write(out, v);
@@ -114,18 +114,17 @@ async function drive(url, mode, out) {
     lines.push(l);
     console.log(l);
   };
-  // THE PAGE'S ORIGIN IS A SECURE CONTEXT. The subject serves the page over plain http on the
-  // host's non-loopback address (the one candidate its answer advertises), and a browser exposes
-  // `navigator.mediaDevices` only to a secure context, so without this every leg dies in the page
-  // before any cell is graded. Each browser is told to treat exactly this origin as secure.
+  // Each browser reaches signaling and ICE over candidate-private loopback.
+  // Enable loopback ICE explicitly; real media/data-channel/close cells are unchanged.
   const origin = new URL(url);
   const launch = {
     chromium: () =>
       pw.chromium.launch({
         headless: true,
         // The full build in its headless mode: the headless shell ignores the secure-origin switch.
-        channel: "chromium",
+        executablePath: "/opt/busbar-conformance/webrtc/bin/chromium",
         args: [
+          "--allow-loopback-in-peer-connection",
           "--use-fake-ui-for-media-stream",
           "--use-fake-device-for-media-stream",
           `--unsafely-treat-insecure-origin-as-secure=${origin.origin}`,
@@ -134,7 +133,9 @@ async function drive(url, mode, out) {
     firefox: () =>
       pw.firefox.launch({
         headless: true,
+        executablePath: "/opt/busbar-conformance/webrtc/bin/firefox",
         firefoxUserPrefs: {
+          "media.peerconnection.ice.loopback": true,
           "media.navigator.streams.fake": true,
           "media.navigator.permission.disabled": true,
           "dom.securecontext.allowlist": origin.hostname,
