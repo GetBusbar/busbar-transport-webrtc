@@ -26,8 +26,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
 DRIVE="$ROOT/bin/drive.mjs"
 FIXTURES="$ROOT/fixtures"
-REPORTS_DIR="$ROOT/reports"
-SUBJECT_BIN="$REPO_ROOT/target/debug/webrtc-conformance-subject"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
+# Measured source stays read-only; every leg, including recursive close control,
+# uses the declared output workspace or the writable build target fallback.
+REPORTS_DIR="${CONFORMANCE_OUT:-$TARGET_DIR/conformance/webrtc-browser}/reports"
+SUBJECT_BIN="$TARGET_DIR/debug/webrtc-conformance-subject"
 
 mode="${1:---selftest}"
 

@@ -20,6 +20,8 @@ H="$REPO/testing/webrtc-conformance"
 OUT="${CONFORMANCE_OUT:?}"
 BC="${BUSBAR_CHECKOUT:?}"
 TARGET="${CARGO_TARGET_DIR:-$REPO/target}"
+export CARGO_TARGET_DIR="$TARGET"
+REPORTS="$OUT/reports"
 W="$(mktemp -d "${TMPDIR:-/tmp}/webrtc-browser.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
 REAL_NODE="$(command -v node)"
@@ -72,12 +74,6 @@ if ! CARGO_TARGET_DIR="$TARGET" cargo build --manifest-path "$W/ws/Cargo.toml" -
   verdict fail true "the webrtc-conformance-subject did not build against busbar ${BUSBAR_PIN:-}: see log.txt"
   exit 1
 fi
-# run.sh looks for the subject at <repo>/target/debug; put it there if the target dir differs.
-mkdir -p "$REPO/target/debug"
-if [ "$TARGET/debug/webrtc-conformance-subject" != "$REPO/target/debug/webrtc-conformance-subject" ]; then
-  cp "$TARGET/debug/webrtc-conformance-subject" "$REPO/target/debug/webrtc-conformance-subject"
-fi
-
 # ---- the browsers: immutable, pinned offline tools in this candidate namespace ----
 if [ ! -f "$BROWSER_TOOLS/node_modules/playwright/index.mjs" ] || \
    [ ! -x "$BROWSER_TOOLS/bin/chromium" ] || [ ! -x "$BROWSER_TOOLS/bin/firefox" ]; then
@@ -89,7 +85,7 @@ export PLAYWRIGHT_BROWSERS_PATH="$BROWSER_TOOLS/browsers"
 export WEBRTC_SUBJECT_HOST=127.0.0.1
 
 # ---- the three legs, through the repo's own run.sh ----
-rm -rf "$H/reports"
+rm -rf "$REPORTS"
 fails=""; notrun=""
 leg() { # <name> <run.sh mode>
   say "=== leg $1"
@@ -112,10 +108,9 @@ leg subject --subject
 detail="$("$REAL_NODE" -e '
   const fs = require("fs");
   for (const t of ["control", "negative-control", "negative-close-control", "subject"]) {
-    try { const v = JSON.parse(fs.readFileSync(process.argv[1] + "/reports/" + t + "/verdict.json", "utf8"));
+    try { const v = JSON.parse(fs.readFileSync(process.argv[1] + "/" + t + "/verdict.json", "utf8"));
       console.log(t + ": " + v.status + " (" + v.reason + ")"); } catch (e) { console.log(t + ": no verdict"); }
-  }' "$H" | tr '\n' ' ')"
-mkdir -p "$OUT/reports" && cp -R "$H/reports/." "$OUT/reports/" 2>/dev/null || true
+  }' "$REPORTS" | tr '\n' ' ')"
 if [ -n "$fails" ]; then
   verdict fail true "legs failed:$fails. $detail"; exit 1
 elif [ -n "$notrun" ]; then
